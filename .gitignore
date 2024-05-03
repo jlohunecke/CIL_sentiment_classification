@@ -1,2 +1,4 @@
 # Ignore the data directory
 /twitter-datasets/
+
+*/__pycache__
