@@ -2,15 +2,15 @@ import pandas as pd
 
 
 def load_data(train_path_neg, train_path_pos, test_path, val_split=0.1):
-    train_neg = pd.read_fwf(train_path_neg, header=None, names=["tweet"])
-    train_neg["label"] = 0
-    train_neg = train_neg[:int(val_split * len(train_neg))]
-    val_neg = train_neg[int(val_split * len(train_neg)):]
+    train_neg_ = pd.read_fwf(train_path_neg, header=None, names=["tweet"])
+    train_neg_["label"] = 0
+    train_neg = train_neg_[:int(val_split * len(train_neg_))]
+    val_neg = train_neg_[int(val_split * len(train_neg_)):]
 
-    train_pos = pd.read_fwf(train_path_pos, header=None, names=["tweet"])
-    train_pos["label"] = 1
-    train_pos = train_pos[:int(val_split * len(train_pos))]
-    val_pos = train_pos[int(val_split * len(train_pos)):]
+    train_pos_ = pd.read_fwf(train_path_pos, header=None, names=["tweet"])
+    train_pos_["label"] = 1
+    train_pos = train_pos_[:int(val_split * len(train_pos_))]
+    val_pos = train_pos_[int(val_split * len(train_pos_)):]
 
     train = pd.concat([train_neg, train_pos], ignore_index=True).sample(frac=1).reset_index(drop=True)
     X_train = train["tweet"].squeeze()
