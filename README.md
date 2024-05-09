@@ -32,3 +32,6 @@ Your task is to fill in the SGD updates to the template
 glove_template.py
 
 Once you tested your system on the small set of 10% of all tweets, we suggest you run on the full datasets train_pos_full.txt, train_neg_full.txt
+
+## GloVe datasets
+to use glove embeddings, download Twitter embeddings from here: https://nlp.stanford.edu/projects/glove/ and unzip into glove_data/ directory
