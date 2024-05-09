@@ -6,6 +6,7 @@ from collections import Counter
 from torch.nn.utils.rnn import pad_sequence
 import torch.optim as optim
 from torch.utils.data import TensorDataset, DataLoader
+import pdb
 
 from load_data import load_data
 
@@ -16,6 +17,7 @@ GRU_UNITS = 64
 NUM_EPOCHS = 10
 BATCH_SIZE = 32
 MODEL_SAVE_PATH = getcwd() + "/models/model_weights.pth"
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # load data
 train_path_neg = getcwd() + "/twitter-datasets/train_neg.txt"
@@ -31,8 +33,8 @@ def preprocess_for_rnn(X, y):
     counter = Counter(all_tokens)
     indexed_vocab = {elt[0] : idx for idx, elt in enumerate(counter.most_common(MAX_VOCAB_SIZE-1))}
     indexed_data = [torch.tensor([indexed_vocab.get(token, MAX_VOCAB_SIZE-1) for token in sequence]) for sequence in tokenized_sequences]
-    padded_data = pad_sequence(indexed_data, batch_first=True)
-    labels = torch.Tensor(y)
+    padded_data = pad_sequence(indexed_data, batch_first=True).to(DEVICE)
+    labels = torch.Tensor(y).to(DEVICE)
     return TensorDataset(padded_data[:, :MAX_SEQUENCE_LENGTH], labels)
 
 train_dataset = preprocess_for_rnn(X_train, y_train)
@@ -60,13 +62,13 @@ class SentimentAnalysisRNN(nn.Module):
 print("Training started")
 train_dataloader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
 val_dataloader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
-model = SentimentAnalysisRNN(MAX_VOCAB_SIZE, MAX_SEQUENCE_LENGTH, GRU_UNITS)
+model = SentimentAnalysisRNN(MAX_VOCAB_SIZE, MAX_SEQUENCE_LENGTH, GRU_UNITS).to(DEVICE)
 if RETRAIN:
     criterion = nn.BCELoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)
-    model.train()  # Set the model to training mode
     for epoch in range(NUM_EPOCHS):
-        # perform training
+        # perform 
+        model.train()  # Set the model to training mode
         train_loss = 0.0
         for inputs, labels in train_dataloader:
             optimizer.zero_grad()  # Zero the gradients
