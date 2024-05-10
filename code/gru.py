@@ -9,9 +9,11 @@ import torch.optim as optim
 from torch.utils.data import TensorDataset, DataLoader
 import pdb
 import pickle
+import numpy as np
 
 from load_data import load_data
 from preprocess import preprocess
+from glove import get_glove_embeddings, create_embedding_matrix
 
 # hyperparams
 MAX_SEQUENCE_LENGTH = 40
@@ -22,10 +24,13 @@ BATCH_SIZE = 5000
 DROPOUT = 0.4
 WEIGHT_DECAY = 1e-4
 NUM_LAYERS = 1
+USE_GLOVE = True
 # settings
 RETRAIN = True
 LOAD_PREPROCESSED = True
+EMBEDDING_DIM = 25
 PREPROCESSED_PATH = getcwd() + "/twitter-datasets/preprocessed_data.pkl"
+GLOVE_PATH = getcwd() + "/glove_data/glove.twitter.27B." + str(EMBEDDING_DIM) + "d.txt"
 USE_JACOBS_PREPROCESSING = False
 MODEL_SAVE_PATH = getcwd() + "/models/model_weights.pth"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -69,24 +74,31 @@ def preprocess_for_rnn(X, y):
         tokenized_sequences = X.apply(tokenizer)
     all_tokens = [elt for sequence in tokenized_sequences for elt in sequence]
     counter = Counter(all_tokens)
-    indexed_vocab = {elt[0] : idx for idx, elt in enumerate(counter.most_common(MAX_VOCAB_SIZE-1))}
-    indexed_data = [torch.tensor([indexed_vocab.get(token, MAX_VOCAB_SIZE-1) for token in sequence]) for sequence in tokenized_sequences]
+    indexed_vocab = {elt[0] : idx for idx, elt in enumerate(counter.most_common(MAX_VOCAB_SIZE))}
+    indexed_data = [torch.tensor([indexed_vocab.get(token, MAX_VOCAB_SIZE) for token in sequence]) for sequence in tokenized_sequences]
     padded_data = pad_sequence(indexed_data, batch_first=True).to(DEVICE)
     labels = torch.Tensor(y).to(DEVICE)
-    return TensorDataset(padded_data[:, :MAX_SEQUENCE_LENGTH], labels)
+    return TensorDataset(padded_data[:, :MAX_SEQUENCE_LENGTH], labels), indexed_vocab
 
 if USE_JACOBS_PREPROCESSING:
-    train_dataset = preprocess_for_rnn(X_train_, y_train)
-    val_dataset = preprocess_for_rnn(X_val_, y_val)
+    train_dataset, vocab = preprocess_for_rnn(X_train_, y_train)
+    val_dataset, _ = preprocess_for_rnn(X_val_, y_val)
 else:
-    train_dataset = preprocess_for_rnn(X_train, y_train)
-    val_dataset = preprocess_for_rnn(X_val, y_val)
+    train_dataset, vocab = preprocess_for_rnn(X_train, y_train)
+    val_dataset, _ = preprocess_for_rnn(X_val, y_val)
+
+
+embedding_matrix = create_embedding_matrix(vocab, GLOVE_PATH, np.zeros(EMBEDDING_DIM)) if USE_GLOVE else None
 
 # define RNN
 class SentimentAnalysisRNN(nn.Module):
-    def __init__(self, max_vocab_size, embedding_dim, gru_units):
+    def __init__(self, max_vocab_size, embedding_dim, gru_units, glove_embeddings=None):
         super(SentimentAnalysisRNN, self).__init__()        
-        self.embedding = nn.Embedding(max_vocab_size, embedding_dim)
+        if USE_GLOVE:
+            self.embedding = nn.Embedding.from_pretrained(glove_embeddings)
+        else:
+            self.embedding = nn.Embedding(max_vocab_size, embedding_dim)
+            # self.embedding.weight.requires_grad = False  # Optionally freeze the embedding layer
         self.gru = nn.GRU(embedding_dim, gru_units, dropout=DROPOUT, batch_first=True, num_layers=NUM_LAYERS)
         self.dropout = nn.Dropout(DROPOUT)
         self.fc = nn.Linear(gru_units, 1)
@@ -94,6 +106,7 @@ class SentimentAnalysisRNN(nn.Module):
 
     def forward(self, x):
         embedded = self.embedding(x)
+        embedded = embedded.float()
         output, _ = self.gru(embedded)
         output = self.dropout(output[:, -1, :])  # Taking the last hidden state
         output = self.fc(output)
@@ -104,7 +117,7 @@ class SentimentAnalysisRNN(nn.Module):
 print("Training started")
 train_dataloader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
 val_dataloader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
-model = SentimentAnalysisRNN(MAX_VOCAB_SIZE, MAX_SEQUENCE_LENGTH, GRU_UNITS).to(DEVICE)
+model = SentimentAnalysisRNN(MAX_VOCAB_SIZE, EMBEDDING_DIM, GRU_UNITS, embedding_matrix).to(DEVICE)
 if RETRAIN:
     criterion = nn.BCELoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=WEIGHT_DECAY)
