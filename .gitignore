@@ -2,5 +2,6 @@
 /glove_data/
 /models/
 /twitter-datasets/
+/glove_files/
 
 */__pycache__
