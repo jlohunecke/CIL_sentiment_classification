@@ -55,10 +55,6 @@ def preprocess_tweets(tweets):
 
 def preprocess_tokens(tokens):
 
-    # remove stopwords
-    stop_words = set(nltk.corpus.stopwords.words('english'))
-    tokens = tokens.apply(lambda x: [word for word in x if word not in stop_words])
-
     # remove punctuation
     tokens = tokens.apply(lambda x: [word for word in x if word not in string.punctuation])
 
@@ -72,6 +68,10 @@ def preprocess_tokens(tokens):
     # lemmatize words
     lemmatizer = WordNetLemmatizer()
     tokens = tokens.apply(lambda x: [lemmatizer.lemmatize(word) for word in x])
+
+    # remove stopwords
+    stop_words = set(nltk.corpus.stopwords.words('english'))
+    tokens = tokens.apply(lambda x: [word for word in x if word not in stop_words])
 
     return tokens
 
