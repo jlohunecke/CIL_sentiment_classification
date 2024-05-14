@@ -1,2 +1,7 @@
-# Ignore the data directory
+/preprocessed_data/
+/glove_data/
+/models/
 /twitter-datasets/
+/glove_files/
+
+*/__pycache__
