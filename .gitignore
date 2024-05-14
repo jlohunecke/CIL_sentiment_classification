@@ -1,3 +1,6 @@
 /preprocessed_data/
+/glove_data/
+/models/
+/twitter-datasets/
 
 */__pycache__
