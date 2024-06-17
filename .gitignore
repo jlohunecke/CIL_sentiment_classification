@@ -3,5 +3,8 @@
 /models/
 /twitter-datasets/
 /glove_files/
+/job_output/
+/results/
+/logs/
 
 */__pycache__
