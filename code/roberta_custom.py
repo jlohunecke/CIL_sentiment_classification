@@ -1,4 +1,4 @@
-import os
+import os, argparse
 import numpy as np
 import torch
 import torch.nn as nn
@@ -7,6 +7,7 @@ from tqdm.auto import tqdm
 from datasets import Dataset
 from transformers import AutoTokenizer, AutoModel, AutoConfig, AdamW
 from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 
 from load_data import load_data
 
@@ -23,18 +24,18 @@ class CustomTextDataset(Dataset):
     def __len__(self):
         return len(self.labels)
 
-def preprocess_data_for_roberta(X, y, tokenizer):
+def preprocess_data_for_roberta(X, y, tokenizer, max_len):
     if isinstance(X, pd.Series):
         X = X.tolist()
 
-    encodings = tokenizer(X, truncation=True, padding=True, max_length=MAX_SEQ_LENGTH, return_tensors="pt")
+    encodings = tokenizer(X, truncation=True, padding=True, max_length=max_len, return_tensors="pt")
     
     labels = torch.tensor(y, dtype=torch.long)
     
     return CustomTextDataset(encodings, labels)
 
 class CustomRoberta(nn.Module):
-    def __init__(self, model_name, num_labels): 
+    def __init__(self, model_name, num_labels, hidden): 
         super(CustomRoberta, self).__init__() 
         self.num_labels = num_labels 
 
@@ -43,10 +44,10 @@ class CustomRoberta(nn.Module):
         
         ## this added architecture is variable and can be modified to best fit the data
         self.custom_layers = nn.Sequential(
-            nn.Linear(768, 256),
+            nn.Linear(768, hidden),
             nn.ReLU(),
             nn.Dropout(0.1),
-            nn.Linear(256, self.num_labels)
+            nn.Linear(hidden, self.num_labels)
         )
 
     def forward(self, input_ids, attention_mask):
@@ -104,62 +105,82 @@ def eval_model(model, data_loader, loss_fn, device):
     accuracy = np.mean(np.array(all_predictions) == np.array(all_labels))
     return total_loss / len(data_loader), accuracy
 
-# TO surpress warning
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
+def main():
+    parser = argparse.ArgumentParser(description="Choose hyperparameters for roberta training")
+    parser.add_argument('--seq_length', type=int, required=True, help="Sequence length")
+    parser.add_argument('--epochs', type=int, required=True, help="Number of epochs")
+    parser.add_argument('--hidden', type=int, required=True, help="Number of neurons in hidden layer")
+    parser.add_argument('--freeze', action='store_true', help="Enable initial freezing of roberta parameters")
 
-# Hyperparameters
-MODEL_NAME = 'roberta-base'
-NUM_LABELS = 2
-MAX_SEQ_LENGTH = 80
-BATCH_SIZE = 16
-NUM_EPOCHS = 10
-LEARNING_RATE = 1e-5
-MODEL_SAVE_PATH = './results/initial_freeze.pth'
-TOKENIZER_SAVE_PATH = './results'
+    args = parser.parse_args()
 
-# Adapted from Kai's GRU implementation
-train_path_neg = os.getcwd() + "/twitter-datasets/train_neg.txt"
-train_path_pos = os.getcwd() + "/twitter-datasets/train_pos.txt"
-test_path = os.getcwd() + "/twitter-datasets/test_data.txt"
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-X_train, y_train, X_val, y_val, X_test = load_data(train_path_neg, train_path_pos, test_path, val_split=0.8, frac=1.0)
+    # Hyperparameters
+    MODEL_NAME = 'roberta-base'
+    NUM_LABELS = 2
+    MAX_SEQ_LENGTH = args.seq_length
+    BATCH_SIZE = 16
+    NUM_EPOCHS = args.epochs
+    LEARNING_RATE = 1e-5
+    MODEL_SAVE_PATH = './results/initial_freeze.pth'
+    TOKENIZER_SAVE_PATH = './results'
 
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    # TensorBoard SummaryWriter
+    writer = SummaryWriter()
 
-train_dataset = preprocess_data_for_roberta(X_train, y_train, tokenizer)
-val_dataset = preprocess_data_for_roberta(X_val, y_val, tokenizer)
+    # Adapted from Kai's GRU implementation
+    train_path_neg = os.getcwd() + "/twitter-datasets/train_neg.txt"
+    train_path_pos = os.getcwd() + "/twitter-datasets/train_pos.txt"
+    test_path = os.getcwd() + "/twitter-datasets/test_data.txt"
 
-train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=custom_collate_fn)
-val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=custom_collate_fn)
+    X_train, y_train, X_val, y_val, X_test = load_data(train_path_neg, train_path_pos, test_path, val_split=0.8, frac=1.0)
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-n_gpus = torch.cuda.device_count()
-print(f"Training on {n_gpus} GPUs.")
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 
-# Initialize model, optimizer, loss
-model = CustomRoberta(model_name=MODEL_NAME, num_labels=NUM_LABELS).to(device)
-optimizer = AdamW(model.parameters(), lr=LEARNING_RATE)
-loss_fn = nn.CrossEntropyLoss()
+    train_dataset = preprocess_data_for_roberta(X_train, y_train, tokenizer, MAX_SEQ_LENGTH)
+    val_dataset = preprocess_data_for_roberta(X_val, y_val, tokenizer, MAX_SEQ_LENGTH)
 
-# Freeze all the parameters of the roberta model initially
-for param in model.roberta.parameters():
-    param.requires_grad = False
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=custom_collate_fn)
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=custom_collate_fn)
 
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    n_gpus = torch.cuda.device_count()
+    print(f"Training on {n_gpus} GPUs.")
 
-# Simple training loop
-for epoch in range(NUM_EPOCHS):
-    train_loss = train_epoch(model, train_loader, loss_fn, optimizer, device)
-    val_loss, val_accuracy = eval_model(model, val_loader, loss_fn, device)
-    print(f"Epoch {epoch+1}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Val Accuracy: {val_accuracy:.4f}")
+    # Initialize model, optimizer, loss
+    model = CustomRoberta(model_name=MODEL_NAME, num_labels=NUM_LABELS, hidden=args.hidden).to(device)
+    optimizer = AdamW(model.parameters(), lr=LEARNING_RATE)
+    loss_fn = nn.CrossEntropyLoss()
 
-
-    # Unfreeze RoBERTa weights after half of the epoch iterations
-    if epoch == NUM_EPOCHS // 2:
+    if args.freeze:
         for param in model.roberta.parameters():
-            param.requires_grad = True
+            param.requires_grad = False
 
-# Save the model
-torch.save(model.state_dict(), MODEL_SAVE_PATH)
-tokenizer.save_pretrained(TOKENIZER_SAVE_PATH)
+    for epoch in range(NUM_EPOCHS):
+        train_loss = train_epoch(model, train_loader, loss_fn, optimizer, device)
+        val_loss, val_accuracy = eval_model(model, val_loader, loss_fn, device)
+        print(f"Epoch {epoch+1}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Val Accuracy: {val_accuracy:.4f}")
+
+        # Log metrics to TensorBoard
+        writer.add_scalar('Loss/train', train_loss, epoch)
+        writer.add_scalar('Loss/val', val_loss, epoch)
+        writer.add_scalar('Accuracy/val', val_accuracy, epoch)
+
+        # Unfreeze RoBERTa weights after half of the epoch iterations
+        if args.freeze:
+            if epoch == NUM_EPOCHS // 2:
+                for param in model.roberta.parameters():
+                    param.requires_grad = True
+
+    # Save the model
+    torch.save(model.state_dict(), MODEL_SAVE_PATH)
+    tokenizer.save_pretrained(TOKENIZER_SAVE_PATH)
+
+    writer.close()
+
+    print(args.seq_length, args.epochs, args.hidden, args.freeze)
 
 
+if __name__ == "__main__":
+    main()
