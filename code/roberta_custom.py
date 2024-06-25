@@ -24,7 +24,7 @@ class CustomTextDataset(Dataset):
     def __len__(self):
         return len(self.labels)
 
-def preprocess_data_for_roberta(X, y, tokenizer, max_len):
+def preprocess_data_for_transformer(X, y, tokenizer, max_len):
     if isinstance(X, pd.Series):
         X = X.tolist()
 
@@ -34,24 +34,24 @@ def preprocess_data_for_roberta(X, y, tokenizer, max_len):
     
     return CustomTextDataset(encodings, labels)
 
-class CustomRoberta(nn.Module):
-    def __init__(self, model_name, num_labels, hidden): 
-        super(CustomRoberta, self).__init__() 
+class CustomTransformer(nn.Module):
+    def __init__(self, model_name, num_labels, model_hidden, hidden): 
+        super(CustomTransformer, self).__init__() 
         self.num_labels = num_labels 
 
-        self.roberta = AutoModel.from_pretrained(model_name, config=AutoConfig.from_pretrained(model_name, output_attentions=True, output_hidden_states=True))
+        self.transformer = AutoModel.from_pretrained(model_name, config=AutoConfig.from_pretrained(model_name, output_attentions=True, output_hidden_states=True))
         self.dropout = nn.Dropout(0.1) 
         
         ## this added architecture is variable and can be modified to best fit the data
         self.custom_layers = nn.Sequential(
-            nn.Linear(768, hidden),
+            nn.Linear(model_hidden, hidden),
             nn.ReLU(),
             nn.Dropout(0.1),
             nn.Linear(hidden, self.num_labels)
         )
 
     def forward(self, input_ids, attention_mask):
-        outputs = self.roberta(input_ids=input_ids, attention_mask=attention_mask)
+        outputs = self.transformer(input_ids=input_ids, attention_mask=attention_mask)
         sequence_output = self.dropout(outputs.last_hidden_state[:, 0, :])
         logits = self.custom_layers(sequence_output)
         return logits
@@ -106,18 +106,20 @@ def eval_model(model, data_loader, loss_fn, device):
     return total_loss / len(data_loader), accuracy
 
 def main():
-    parser = argparse.ArgumentParser(description="Choose hyperparameters for roberta training")
+    parser = argparse.ArgumentParser(description="Choose hyperparameters for transformer training")
+    parser.add_argument('--model', type=str, required=True, help="Name of pre-trained transformer model")
     parser.add_argument('--seq_length', type=int, required=True, help="Sequence length")
     parser.add_argument('--epochs', type=int, required=True, help="Number of epochs")
+    parser.add_argument('--hiddenmodel', type=int, required=True, help="Number of hidden neurons in the passed model")
     parser.add_argument('--hidden', type=int, required=True, help="Number of neurons in hidden layer")
-    parser.add_argument('--freeze', action='store_true', help="Enable initial freezing of roberta parameters")
+    parser.add_argument('--freeze', action='store_true', help="Enable initial freezing of transformer parameters")
 
     args = parser.parse_args()
 
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
     # Hyperparameters
-    MODEL_NAME = 'roberta-base'
+    MODEL_NAME = args.model
     NUM_LABELS = 2
     MAX_SEQ_LENGTH = args.seq_length
     BATCH_SIZE = 16
@@ -138,8 +140,8 @@ def main():
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 
-    train_dataset = preprocess_data_for_roberta(X_train, y_train, tokenizer, MAX_SEQ_LENGTH)
-    val_dataset = preprocess_data_for_roberta(X_val, y_val, tokenizer, MAX_SEQ_LENGTH)
+    train_dataset = preprocess_data_for_transformer(X_train, y_train, tokenizer, MAX_SEQ_LENGTH)
+    val_dataset = preprocess_data_for_transformer(X_val, y_val, tokenizer, MAX_SEQ_LENGTH)
 
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=custom_collate_fn)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=custom_collate_fn)
@@ -149,12 +151,12 @@ def main():
     print(f"Training on {n_gpus} GPUs.")
 
     # Initialize model, optimizer, loss
-    model = CustomRoberta(model_name=MODEL_NAME, num_labels=NUM_LABELS, hidden=args.hidden).to(device)
+    model = CustomTransformer(model_name=MODEL_NAME, num_labels=NUM_LABELS, model_hidden=args.hiddenmodel, hidden=args.hidden).to(device)
     optimizer = AdamW(model.parameters(), lr=LEARNING_RATE)
     loss_fn = nn.CrossEntropyLoss()
 
     if args.freeze:
-        for param in model.roberta.parameters():
+        for param in model.transformer.parameters():
             param.requires_grad = False
 
     for epoch in range(NUM_EPOCHS):
@@ -167,10 +169,10 @@ def main():
         writer.add_scalar('Loss/val', val_loss, epoch)
         writer.add_scalar('Accuracy/val', val_accuracy, epoch)
 
-        # Unfreeze RoBERTa weights after half of the epoch iterations
+        # Unfreeze transformer weights after half of the epoch iterations
         if args.freeze:
             if epoch == NUM_EPOCHS // 2:
-                for param in model.roberta.parameters():
+                for param in model.transformer.parameters():
                     param.requires_grad = True
 
     # Save the model
@@ -179,7 +181,7 @@ def main():
 
     writer.close()
 
-    print(args.seq_length, args.epochs, args.hidden, args.freeze)
+    print(args.model, args.seq_length, args.epochs, args.hiddenmodel, args.hidden, args.freeze)
 
 
 if __name__ == "__main__":
