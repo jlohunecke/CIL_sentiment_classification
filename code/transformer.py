@@ -5,9 +5,12 @@ import torch.nn as nn
 import pandas as pd
 from tqdm.auto import tqdm
 from datasets import Dataset
-from transformers import AutoTokenizer, AutoModel, AutoConfig, AdamW
+from transformers import AutoTokenizer, AutoModel, AutoConfig
+from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
+
+import matplotlib.pyplot as plt
 
 from load_data import load_data
 
@@ -17,8 +20,8 @@ class CustomTextDataset(Dataset):
         self.labels = labels
 
     def __getitem__(self, idx):
-        item = {key: torch.tensor(val[idx]) for key, val in self.encodings.items()}
-        item['labels'] = torch.tensor(self.labels[idx])
+        item = {key: val[idx].clone().detach() for key, val in self.encodings.items()}
+        item['labels'] = self.labels[idx].clone().detach()
         return item
 
     def __len__(self):
@@ -35,16 +38,17 @@ def preprocess_data_for_transformer(X, y, tokenizer, max_len):
     return CustomTextDataset(encodings, labels)
 
 class CustomTransformer(nn.Module):
-    def __init__(self, model_name, num_labels, model_hidden, hidden): 
+    def __init__(self, model_name, num_labels, hidden): 
         super(CustomTransformer, self).__init__() 
         self.num_labels = num_labels 
 
-        self.transformer = AutoModel.from_pretrained(model_name, config=AutoConfig.from_pretrained(model_name, output_attentions=True, output_hidden_states=True))
+        config = AutoConfig.from_pretrained(model_name, output_attentions=True, output_hidden_states=True)
+        self.transformer = AutoModel.from_pretrained(model_name, config=config)
         self.dropout = nn.Dropout(0.1) 
         
         ## this added architecture is variable and can be modified to best fit the data
         self.custom_layers = nn.Sequential(
-            nn.Linear(model_hidden, hidden),
+            nn.Linear(config.hidden_size, hidden),
             nn.ReLU(),
             nn.Dropout(0.1),
             nn.Linear(hidden, self.num_labels)
@@ -110,9 +114,10 @@ def main():
     parser.add_argument('--model', type=str, required=True, help="Name of pre-trained transformer model")
     parser.add_argument('--seq_length', type=int, required=True, help="Sequence length")
     parser.add_argument('--epochs', type=int, required=True, help="Number of epochs")
-    parser.add_argument('--hiddenmodel', type=int, required=True, help="Number of hidden neurons in the passed model")
     parser.add_argument('--hidden', type=int, required=True, help="Number of neurons in hidden layer")
     parser.add_argument('--freeze', action='store_true', help="Enable initial freezing of transformer parameters")
+    parser.add_argument('--folder', type=str, required=False, help="Folder name, where the model and tokenizer are going to be saved.")
+    parser.add_argument('--save_name', type=str, required=False, help="Model will be saved with 'save_name'.pth in the folder")
 
     args = parser.parse_args()
 
@@ -125,8 +130,8 @@ def main():
     BATCH_SIZE = 16
     NUM_EPOCHS = args.epochs
     LEARNING_RATE = 1e-5
-    MODEL_SAVE_PATH = './results/initial_freeze.pth'
-    TOKENIZER_SAVE_PATH = './results'
+    SAVE_FOLDER = './' + args.folder if args.folder else './results'
+    MODEL_SAVE = os.path.join(SAVE_FOLDER, args.save_name + '.pth' if args.save_name else 'single_transformer.pth')
 
     # TensorBoard SummaryWriter
     writer = SummaryWriter()
@@ -140,20 +145,32 @@ def main():
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 
-    train_dataset = preprocess_data_for_transformer(X_train, y_train, tokenizer, MAX_SEQ_LENGTH)
-    val_dataset = preprocess_data_for_transformer(X_val, y_val, tokenizer, MAX_SEQ_LENGTH)
-
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=custom_collate_fn)
-    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=custom_collate_fn)
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     n_gpus = torch.cuda.device_count()
     print(f"Training on {n_gpus} GPUs.")
 
     # Initialize model, optimizer, loss
-    model = CustomTransformer(model_name=MODEL_NAME, num_labels=NUM_LABELS, model_hidden=args.hiddenmodel, hidden=args.hidden).to(device)
+    model = CustomTransformer(model_name=MODEL_NAME, num_labels=NUM_LABELS, hidden=args.hidden).to(device)
     optimizer = AdamW(model.parameters(), lr=LEARNING_RATE)
     loss_fn = nn.CrossEntropyLoss()
+    # loss_fn = nn.BCEWithLogitsLoss()
+
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.unk_token
+
+    # lengths = [len(tokenizer.encode(text)) for text in X_train]
+    # plt.hist(lengths, bins=50)
+    # plt.xlabel('Sequence Length')
+    # plt.ylabel('Frequency')
+    # plt.savefig('sequence_length_histogram.png')
+
+    # return
+
+    train_dataset = preprocess_data_for_transformer(X_train, y_train, tokenizer, MAX_SEQ_LENGTH)
+    val_dataset = preprocess_data_for_transformer(X_val, y_val, tokenizer, MAX_SEQ_LENGTH)
+
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=custom_collate_fn)
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=custom_collate_fn)
 
     if args.freeze:
         for param in model.transformer.parameters():
@@ -175,14 +192,23 @@ def main():
                 for param in model.transformer.parameters():
                     param.requires_grad = True
 
+    os.makedirs(SAVE_FOLDER, exist_ok=True)
+    
     # Save the model
-    torch.save(model.state_dict(), MODEL_SAVE_PATH)
-    tokenizer.save_pretrained(TOKENIZER_SAVE_PATH)
+    torch.save(model.state_dict(), MODEL_SAVE)
+    tokenizer.save_pretrained(SAVE_FOLDER)
 
     writer.close()
 
-    print(args.model, args.seq_length, args.epochs, args.hiddenmodel, args.hidden, args.freeze)
+    print("The custom transformer was trained in the following configuration: ")
+    print(args.model, args.seq_length, args.epochs, args.hidden, args.freeze)
 
 
 if __name__ == "__main__":
     main()
+    ### for tensorboard output, connect via:
+    # ssh -L 6006:localhost:6006 username@remote_server_address
+    ### after starting the training script:
+    # tensorboard --logdir=runs --port=6006
+    ### on local machine, open:
+    # http://localhost:6006
