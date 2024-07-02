@@ -141,11 +141,12 @@ def main():
     train_path_pos = os.getcwd() + "/twitter-datasets/train_pos.txt"
     test_path = os.getcwd() + "/twitter-datasets/test_data.txt"
 
-    X_train, y_train, X_val, y_val, X_test = load_data(train_path_neg, train_path_pos, test_path, val_split=0.8, frac=1.0)
+    X_train, y_train, X_val, y_val, X_test = load_data(train_path_neg, train_path_pos, test_path, val_split=0.8, frac=0.1)
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    #device = torch.device("mps")
     n_gpus = torch.cuda.device_count()
     print(f"Training on {n_gpus} GPUs.")
 

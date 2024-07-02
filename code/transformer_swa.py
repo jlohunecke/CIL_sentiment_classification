@@ -39,7 +39,7 @@ def preprocess_data_for_transformer(X, y, tokenizer, max_len):
     return CustomTextDataset(encodings, labels)
 
 class CustomTransformer(nn.Module):
-    def __init__(self, model_name, num_labels, hidden): 
+    def __init__(self, model_name, num_labels, hidden_width, hidden_depth):
         super(CustomTransformer, self).__init__() 
         self.num_labels = num_labels 
 
@@ -48,12 +48,18 @@ class CustomTransformer(nn.Module):
         self.dropout = nn.Dropout(0.1) 
         
         ## this added architecture is variable and can be modified to best fit the data
-        self.custom_layers = nn.Sequential(
-            nn.Linear(config.hidden_size, hidden),
-            nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Linear(hidden, self.num_labels)
-        )
+        hidden_layers = []
+        for i in range(hidden_depth):
+            if i == 0:
+                hidden_layers.append(nn.Linear(config.hidden_size, hidden_width))
+            else:
+                hidden_layers.append(nn.Linear(hidden_width, hidden_width))
+            hidden_layers.append(nn.ReLU())
+            hidden_layers.append(nn.Dropout(0.1))
+        nn.Linear(hidden_width, self.num_labels)
+
+        self.custom_layers = nn.Sequential(*hidden_layers)
+
 
     def forward(self, input_ids, attention_mask):
         outputs = self.transformer(input_ids=input_ids, attention_mask=attention_mask)
@@ -75,6 +81,7 @@ def custom_collate_fn(batch):
 def train_epoch(model, data_loader, loss_fn, optimizer, device):
     model.train()
     total_loss = 0
+    total_accuracy = 0
     for batch in tqdm(data_loader):
         input_ids = batch['input_ids'].to(device)
         attention_mask = batch['attention_mask'].to(device)
@@ -86,7 +93,12 @@ def train_epoch(model, data_loader, loss_fn, optimizer, device):
         loss.backward()
         optimizer.step()
         total_loss += loss.item()
-    return total_loss / len(data_loader)
+        total_accuracy += torch.mean((torch.argmax(outputs, dim=1) == labels).float())
+
+    total_loss /= len(data_loader)
+    total_accuracy /= len(data_loader)
+
+    return total_loss, total_accuracy
 
 def eval_model(model, data_loader, loss_fn, device):
     model.eval()
@@ -115,7 +127,8 @@ def main():
     parser.add_argument('--model', type=str, required=True, help="Name of pre-trained transformer model")
     parser.add_argument('--seq_length', type=int, required=True, help="Sequence length")
     parser.add_argument('--epochs', type=int, required=True, help="Number of epochs")
-    parser.add_argument('--hidden', type=int, required=True, help="Number of neurons in hidden layer")
+    parser.add_argument('--hidden_width', type=int, required=True, help="Number of neurons in hidden layer")
+    parser.add_argument('--hidden_depth', type=int, required=True, help="Number of hidden layers")
     parser.add_argument('--freeze', action='store_true', help="Enable initial freezing of transformer parameters")
     parser.add_argument('--folder', type=str, required=False, help="Folder name, where the model and tokenizer are going to be saved.")
     parser.add_argument('--save_name', type=str, required=False, help="Model will be saved with 'save_name'.pth in the folder")
@@ -128,12 +141,12 @@ def main():
     MODEL_NAME = args.model
     NUM_LABELS = 2
     MAX_SEQ_LENGTH = args.seq_length
-    BATCH_SIZE = 32 #16
+    BATCH_SIZE = 64 #16
     NUM_EPOCHS = args.epochs
-    SWA_START = 10
+    SWA_START = int(NUM_EPOCHS * 0.75)
     LEARNING_RATE = 1e-5
     SAVE_FOLDER = './' + args.folder if args.folder else './results'
-    MODEL_SAVE = os.path.join(SAVE_FOLDER, args.save_name + '.pth' if args.save_name else 'single_transformer.pth')
+    MODEL_SAVE = os.path.join(SAVE_FOLDER, args.save_name + '.pth' if args.save_name else 'single_transformer_swa.pth')
 
     # TensorBoard SummaryWriter
     writer = SummaryWriter()
@@ -152,12 +165,13 @@ def main():
     n_gpus = torch.cuda.device_count()
     print(f"Training on {n_gpus} GPUs.")
 
-    # Initialize model, optimizer, loss
-    model = CustomTransformer(model_name=MODEL_NAME, num_labels=NUM_LABELS, hidden=args.hidden).to(device)
+    # Initialize model, optimizer, loss and SWA (https://pytorch.org/docs/stable/optim.html)
+    model = CustomTransformer(model_name=MODEL_NAME, num_labels=NUM_LABELS, hidden_width=args.hidden_width, hidden_depth=args.hidden_depth).to(device)
     optimizer = AdamW(model.parameters(), lr=LEARNING_RATE)
     loss_fn = nn.CrossEntropyLoss()
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=300)
     swa_model = AveragedModel(model)
-    swa_scheduler = SWALR(optimizer, swa_lr=0.05)
+    swa_scheduler = SWALR(optimizer, anneal_strategy="linear", anneal_epochs=5, swa_lr=0.05)
 
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.unk_token
@@ -173,9 +187,9 @@ def main():
             param.requires_grad = False
 
     for epoch in range(NUM_EPOCHS):
-        train_loss = train_epoch(model, train_loader, loss_fn, optimizer, device)
+        train_loss, train_accuracy = train_epoch(model, train_loader, loss_fn, optimizer, device)
         val_loss, val_accuracy = eval_model(model, val_loader, loss_fn, device)
-        print(f"Epoch {epoch+1}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Val Accuracy: {val_accuracy:.4f}")
+        print(f"Epoch {epoch+1}, Train Loss: {train_loss:.4f}, Train Accuracy: {train_accuracy:.4f}, Val Loss: {val_loss:.4f}, Val Accuracy: {val_accuracy:.4f}")
 
         # Log metrics to TensorBoard
         writer.add_scalar('Loss/train', train_loss, epoch)
@@ -191,9 +205,11 @@ def main():
         if epoch > SWA_START:
             swa_model.update_parameters(model)
             swa_scheduler.step()
-        #else:
+        else:
             # Normal LR scheduler step
-            #scheduler.step()
+            scheduler.step()
+
+    torch.optim.swa_utils.update_bn(train_loader, swa_model)
 
     os.makedirs(SAVE_FOLDER, exist_ok=True)
     
@@ -204,11 +220,20 @@ def main():
     writer.close()
 
     print("The custom transformer was trained in the following configuration: ")
-    print(args.swa_model, args.seq_length, args.epochs, args.hidden, args.freeze)
+    print(args.swa_model, args.seq_length, args.epochs, args.hidden_width, args.hidden_depth, args.freeze)
 
+    # test swa model on data from val_loader
+    swa_model.eval()
+    val_loss, val_accuracy = eval_model(swa_model, val_loader, loss_fn, device)
+
+    print(f"Validation Loss: {val_loss:.4f}, Validation Accuracy: {val_accuracy:.4f}")
 
 if __name__ == "__main__":
     main()
+    # python code/transformer_swa.py --model "bert-large-uncased" --seq_length 50 --epochs 20 --hidden_width 512 --hidden_depth 2 --freeze
+
+
+
     ### for tensorboard output, connect via:
     # ssh -L 6006:localhost:6006 username@remote_server_address
     ### after starting the training script:
