@@ -129,6 +129,7 @@ def main():
     parser.add_argument('--epochs', type=int, required=True, help="Number of epochs")
     parser.add_argument('--hidden_width', type=int, required=True, help="Number of neurons in hidden layer")
     parser.add_argument('--hidden_depth', type=int, required=True, help="Number of hidden layers")
+    parser.add_argument('--frac', type=float, required=True, help="Fraction of data to use for training and validation")
     parser.add_argument('--freeze', action='store_true', help="Enable initial freezing of transformer parameters")
     parser.add_argument('--folder', type=str, required=False, help="Folder name, where the model and tokenizer are going to be saved.")
     parser.add_argument('--save_name', type=str, required=False, help="Model will be saved with 'save_name'.pth in the folder")
@@ -141,9 +142,9 @@ def main():
     MODEL_NAME = args.model
     NUM_LABELS = 2
     MAX_SEQ_LENGTH = args.seq_length
-    BATCH_SIZE = 64 #16
+    BATCH_SIZE = 128 #16
     NUM_EPOCHS = args.epochs
-    SWA_START = int(NUM_EPOCHS * 0.75)
+    SWA_START = int(NUM_EPOCHS * 0.65)
     LEARNING_RATE = 1e-5
     SAVE_FOLDER = './' + args.folder if args.folder else './results'
     MODEL_SAVE = os.path.join(SAVE_FOLDER, args.save_name + '.pth' if args.save_name else 'single_transformer_swa.pth')
@@ -156,7 +157,7 @@ def main():
     train_path_pos = os.getcwd() + "/twitter-datasets/train_pos.txt"
     test_path = os.getcwd() + "/twitter-datasets/test_data.txt"
 
-    X_train, y_train, X_val, y_val, X_test = load_data(train_path_neg, train_path_pos, test_path, val_split=0.8, frac=0.1)
+    X_train, y_train, X_val, y_val, X_test = load_data(train_path_neg, train_path_pos, test_path, val_split=0.8, frac=args.frac)
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 
@@ -171,7 +172,8 @@ def main():
     loss_fn = nn.CrossEntropyLoss()
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=300)
     swa_model = AveragedModel(model)
-    swa_scheduler = SWALR(optimizer, anneal_strategy="linear", anneal_epochs=5, swa_lr=0.05)
+    swa_scheduler = SWALR(optimizer, swa_lr=LEARNING_RATE/2)
+
 
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.unk_token
@@ -198,16 +200,18 @@ def main():
 
         # Unfreeze transformer weights after half of the epoch iterations
         if args.freeze:
-            if epoch == NUM_EPOCHS // 2:
+            if epoch+1 == NUM_EPOCHS // 2:
                 for param in model.transformer.parameters():
                     param.requires_grad = True
 
-        if epoch > SWA_START:
+        if epoch+1 > SWA_START:
             swa_model.update_parameters(model)
             swa_scheduler.step()
+            print(f"SWA LR: {swa_scheduler.get_last_lr()}")
         else:
             # Normal LR scheduler step
             scheduler.step()
+            print(f"LR: {scheduler.get_last_lr()}")
 
     torch.optim.swa_utils.update_bn(train_loader, swa_model)
 
@@ -220,7 +224,7 @@ def main():
     writer.close()
 
     print("The custom transformer was trained in the following configuration: ")
-    print(args.swa_model, args.seq_length, args.epochs, args.hidden_width, args.hidden_depth, args.freeze)
+    print(args.model, args.seq_length, args.epochs, args.hidden_width, args.hidden_depth, args.freeze)
 
     # test swa model on data from val_loader
     swa_model.eval()
@@ -230,7 +234,7 @@ def main():
 
 if __name__ == "__main__":
     main()
-    # python code/transformer_swa.py --model "bert-large-uncased" --seq_length 50 --epochs 20 --hidden_width 512 --hidden_depth 2 --freeze
+    # python code/transformer_swa.py --model "bert-large-uncased" --seq_length 50 --epochs 40 --hidden_width 512 --hidden_depth 2 --freeze --frac 0.01
 
 
 
