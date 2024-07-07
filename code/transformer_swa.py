@@ -32,6 +32,7 @@ def preprocess_data_for_transformer(X, y, tokenizer, max_len):
     if isinstance(X, pd.Series):
         X = X.tolist()
 
+    ### TODO: data preprocessing experimenting
     encodings = tokenizer(X, truncation=True, padding=True, max_length=max_len, return_tensors="pt")
     
     labels = torch.tensor(y, dtype=torch.long)
@@ -153,8 +154,8 @@ def main():
     writer = SummaryWriter()
 
     # Adapted from Kai's GRU implementation
-    train_path_neg = os.getcwd() + "/twitter-datasets/train_neg.txt"
-    train_path_pos = os.getcwd() + "/twitter-datasets/train_pos.txt"
+    train_path_neg = os.getcwd() + "/twitter-datasets/train_neg_full.txt"
+    train_path_pos = os.getcwd() + "/twitter-datasets/train_pos_full.txt"
     test_path = os.getcwd() + "/twitter-datasets/test_data.txt"
 
     X_train, y_train, X_val, y_val, X_test = load_data(train_path_neg, train_path_pos, test_path, val_split=0.8, frac=args.frac)
@@ -235,8 +236,6 @@ def main():
 if __name__ == "__main__":
     main()
     # python code/transformer_swa.py --model "bert-large-uncased" --seq_length 50 --epochs 40 --hidden_width 512 --hidden_depth 2 --freeze --frac 0.01
-
-
 
     ### for tensorboard output, connect via:
     # ssh -L 6006:localhost:6006 username@remote_server_address
