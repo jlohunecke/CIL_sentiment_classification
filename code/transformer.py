@@ -137,8 +137,8 @@ def main():
     writer = SummaryWriter()
 
     # Adapted from Kai's GRU implementation
-    train_path_neg = os.getcwd() + "/twitter-datasets/train_neg.txt"
-    train_path_pos = os.getcwd() + "/twitter-datasets/train_pos.txt"
+    train_path_neg = os.getcwd() + "/twitter-datasets/train_neg_full.txt"
+    train_path_pos = os.getcwd() + "/twitter-datasets/train_pos_full.txt"
     test_path = os.getcwd() + "/twitter-datasets/test_data.txt"
 
     X_train, y_train, X_val, y_val, X_test = load_data(train_path_neg, train_path_pos, test_path, val_split=0.8, frac=0.1)
@@ -207,6 +207,8 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+    # python code/transformer.py --model "bert-large-uncased" --seq_length 50 --epochs 40 --hidden 512 --freeze
     ### for tensorboard output, connect via:
     # ssh -L 6006:localhost:6006 username@remote_server_address
     ### after starting the training script:

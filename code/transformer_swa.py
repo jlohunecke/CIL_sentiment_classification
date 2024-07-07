@@ -164,6 +164,7 @@ def main():
 
     #device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     device = torch.device("mps")
+
     n_gpus = torch.cuda.device_count()
     print(f"Training on {n_gpus} GPUs.")
 
