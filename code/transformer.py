@@ -122,7 +122,8 @@ def predict_test(test_loader, model, save_path, device):
             probabilities = model(input_ids, attention_mask)
             predictions = torch.argmax(probabilities, dim=1)
             output[i*test_loader.batch_size:(i+1)*test_loader.batch_size, 0] = predictions
-    df = pd.DataFrame(output.int().numpy(), columns=['prediction'])
+    df = pd.DataFrame(output.int().numpy(), columns=['Prediction'])
+    df['Id'] = df.reset_index(drop=True).index + 1
     df.to_csv(save_path, index=False)
     print("saved test set predictions to", save_path)
 
