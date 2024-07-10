@@ -21,7 +21,9 @@ def load_data(train_path_neg, train_path_pos, test_path, val_split=0.9, frac=1):
     X_val = val["tweet"].squeeze()
     y_val = val["label"].squeeze()
 
-    X_test = pd.read_fwf(test_path, header=None, names=["tweet"]).squeeze()        
-
-    return X_train, y_train, X_val, y_val, X_test
+    X_test = pd.read_fwf(test_path, header=None, dtype=str)[0]
+    X_test = X_test.apply(lambda row: "".join(row.split(",")[1:])) # remove row indices from tweets
+    y_test_dummy = pd.Series([-1] * len(X_test))
+    
+    return X_train, y_train, X_val, y_val, X_test, y_test_dummy
 

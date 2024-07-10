@@ -9,6 +9,7 @@ from transformers import AutoTokenizer, AutoModel, AutoConfig
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
+import pdb
 
 import matplotlib.pyplot as plt
 
@@ -109,6 +110,23 @@ def eval_model(model, data_loader, loss_fn, device):
     accuracy = np.mean(np.array(all_predictions) == np.array(all_labels))
     return total_loss / len(data_loader), accuracy
 
+def predict_test(test_loader, model, save_path, device):
+    model.eval()
+    output = torch.zeros((len(test_loader.dataset)), 1)
+    print("predicting on test set...")
+    with torch.no_grad():
+        for i, batch in tqdm(enumerate(test_loader), total=int(len(test_loader.dataset) // test_loader.batch_size)):
+            input_ids = batch['input_ids'].to(device)
+            attention_mask = batch['attention_mask'].to(device)
+            probabilities = model(input_ids, attention_mask)
+            predictions = torch.argmax(probabilities, dim=1)
+            output[i*test_loader.batch_size:(i+1)*test_loader.batch_size, 0] = predictions
+    df = pd.DataFrame(output.int().numpy(), columns=['Prediction'])
+    df['Prediction'] = df['Prediction'].replace(0, -1)
+    df['Id'] = df.reset_index(drop=True).index + 1
+    df.to_csv(save_path, index=False)
+    print("saved test set predictions to", save_path)
+
 def main():
     parser = argparse.ArgumentParser(description="Choose hyperparameters for transformer training")
     parser.add_argument('--model', type=str, required=True, help="Name of pre-trained transformer model")
@@ -118,6 +136,8 @@ def main():
     parser.add_argument('--freeze', action='store_true', help="Enable initial freezing of transformer parameters")
     parser.add_argument('--folder', type=str, required=False, help="Folder name, where the model and tokenizer are going to be saved.")
     parser.add_argument('--save_name', type=str, required=False, help="Model will be saved with 'save_name'.pth in the folder")
+    parser.add_argument('--inference_name', type=str, required=False, help="After training, model will predict results for the test dataset and save them to 'inference_name.csv' in the save folder")
+    parser.add_argument('--batch', type=int, help="batch size, default is 16")
 
     args = parser.parse_args()
 
@@ -127,11 +147,12 @@ def main():
     MODEL_NAME = args.model
     NUM_LABELS = 2
     MAX_SEQ_LENGTH = args.seq_length
-    BATCH_SIZE = 16
+    BATCH_SIZE = args.batch if args.batch else 16
     NUM_EPOCHS = args.epochs
     LEARNING_RATE = 1e-5
     SAVE_FOLDER = './' + args.folder if args.folder else './results'
     MODEL_SAVE = os.path.join(SAVE_FOLDER, args.save_name + '.pth' if args.save_name else 'single_transformer.pth')
+    INFERENCE_SAVE = os.path.join(SAVE_FOLDER, args.inference_name + '.csv') if args.inference_name else None
 
     # TensorBoard SummaryWriter
     writer = SummaryWriter()
@@ -141,7 +162,8 @@ def main():
     train_path_pos = os.getcwd() + "/twitter-datasets/train_pos_full.txt"
     test_path = os.getcwd() + "/twitter-datasets/test_data.txt"
 
-    X_train, y_train, X_val, y_val, X_test = load_data(train_path_neg, train_path_pos, test_path, val_split=0.8, frac=0.1)
+    X_train, y_train, X_val, y_val, X_test, y_test_dummy = load_data(train_path_neg, train_path_pos, test_path, val_split=0.8, frac=1.0)
+    # pdb.set_trace()
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 
@@ -169,9 +191,11 @@ def main():
 
     train_dataset = preprocess_data_for_transformer(X_train, y_train, tokenizer, MAX_SEQ_LENGTH)
     val_dataset = preprocess_data_for_transformer(X_val, y_val, tokenizer, MAX_SEQ_LENGTH)
+    test_dataset = preprocess_data_for_transformer(X_test, y_test_dummy, tokenizer, MAX_SEQ_LENGTH)
 
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=custom_collate_fn)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=custom_collate_fn)
+    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=custom_collate_fn)
 
     if args.freeze:
         for param in model.transformer.parameters():
@@ -198,6 +222,10 @@ def main():
     # Save the model
     torch.save(model.state_dict(), MODEL_SAVE)
     tokenizer.save_pretrained(SAVE_FOLDER)
+
+    # Make predictions for test data
+    # pdb.set_trace()
+    predict_test(test_loader, model, INFERENCE_SAVE, device)
 
     writer.close()
 
