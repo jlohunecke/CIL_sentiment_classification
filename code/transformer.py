@@ -116,13 +116,13 @@ def predict_test(test_loader, model, save_path, device):
     print("predicting on test set...")
     with torch.no_grad():
         for i, batch in tqdm(enumerate(test_loader), total=int(len(test_loader.dataset) // test_loader.batch_size)):
-            # pdb.set_trace()
             input_ids = batch['input_ids'].to(device)
             attention_mask = batch['attention_mask'].to(device)
             probabilities = model(input_ids, attention_mask)
             predictions = torch.argmax(probabilities, dim=1)
             output[i*test_loader.batch_size:(i+1)*test_loader.batch_size, 0] = predictions
     df = pd.DataFrame(output.int().numpy(), columns=['Prediction'])
+    df['Prediction'] = df['Prediction'].replace(0, -1)
     df['Id'] = df.reset_index(drop=True).index + 1
     df.to_csv(save_path, index=False)
     print("saved test set predictions to", save_path)
@@ -158,11 +158,11 @@ def main():
     writer = SummaryWriter()
 
     # Adapted from Kai's GRU implementation
-    train_path_neg = os.getcwd() + "/twitter-datasets/train_neg.txt"
-    train_path_pos = os.getcwd() + "/twitter-datasets/train_pos.txt"
+    train_path_neg = os.getcwd() + "/twitter-datasets/train_neg_full.txt"
+    train_path_pos = os.getcwd() + "/twitter-datasets/train_pos_full.txt"
     test_path = os.getcwd() + "/twitter-datasets/test_data.txt"
 
-    X_train, y_train, X_val, y_val, X_test, y_test_dummy = load_data(train_path_neg, train_path_pos, test_path, val_split=0.8, frac=0.1)
+    X_train, y_train, X_val, y_val, X_test, y_test_dummy = load_data(train_path_neg, train_path_pos, test_path, val_split=0.8, frac=1.0)
     # pdb.set_trace()
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
