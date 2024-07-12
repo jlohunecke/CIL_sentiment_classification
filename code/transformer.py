@@ -1,4 +1,5 @@
-import os, argparse
+import os
+import argparse
 import numpy as np
 import torch
 import torch.nn as nn
@@ -10,7 +11,6 @@ from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 import pdb
-
 import matplotlib.pyplot as plt
 
 from load_data import load_data
@@ -127,6 +127,18 @@ def predict_test(test_loader, model, save_path, device):
     df.to_csv(save_path, index=False)
     print("saved test set predictions to", save_path)
 
+def load_model(model_path, tokenizer_path, model_name, num_labels, hidden, device):
+    # Load the tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+
+    # Load the model
+    model = CustomTransformer(model_name=model_name, num_labels=num_labels, hidden=hidden)
+    model.load_state_dict(torch.load(model_path, map_location=device))
+    model.to(device)
+    model.eval()
+
+    return model, tokenizer
+
 def main():
     parser = argparse.ArgumentParser(description="Choose hyperparameters for transformer training")
     parser.add_argument('--model', type=str, required=True, help="Name of pre-trained transformer model")
@@ -138,6 +150,7 @@ def main():
     parser.add_argument('--save_name', type=str, required=False, help="Model will be saved with 'save_name'.pth in the folder")
     parser.add_argument('--inference_name', type=str, required=False, help="After training, model will predict results for the test dataset and save them to 'inference_name.csv' in the save folder")
     parser.add_argument('--batch', type=int, help="batch size, default is 16")
+    parser.add_argument('--load_model', type=str, help="Path to load the model for inference")
 
     args = parser.parse_args()
 
@@ -158,8 +171,8 @@ def main():
     writer = SummaryWriter()
 
     # Adapted from Kai's GRU implementation
-    train_path_neg = os.getcwd() + "/twitter-datasets/train_neg_full.txt"
-    train_path_pos = os.getcwd() + "/twitter-datasets/train_pos_full.txt"
+    train_path_neg = os.getcwd() + "/twitter-datasets/train_neg.txt"
+    train_path_pos = os.getcwd() + "/twitter-datasets/train_pos.txt"
     test_path = os.getcwd() + "/twitter-datasets/test_data.txt"
 
     X_train, y_train, X_val, y_val, X_test, y_test_dummy = load_data(train_path_neg, train_path_pos, test_path, val_split=0.8, frac=1.0)
@@ -176,18 +189,6 @@ def main():
     model = CustomTransformer(model_name=MODEL_NAME, num_labels=NUM_LABELS, hidden=args.hidden).to(device)
     optimizer = AdamW(model.parameters(), lr=LEARNING_RATE)
     loss_fn = nn.CrossEntropyLoss()
-    # loss_fn = nn.BCEWithLogitsLoss()
-
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.unk_token
-
-    # lengths = [len(tokenizer.encode(text)) for text in X_train]
-    # plt.hist(lengths, bins=50)
-    # plt.xlabel('Sequence Length')
-    # plt.ylabel('Frequency')
-    # plt.savefig('sequence_length_histogram.png')
-
-    # return
 
     train_dataset = preprocess_data_for_transformer(X_train, y_train, tokenizer, MAX_SEQ_LENGTH)
     val_dataset = preprocess_data_for_transformer(X_val, y_val, tokenizer, MAX_SEQ_LENGTH)
@@ -197,41 +198,50 @@ def main():
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=custom_collate_fn)
     test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=custom_collate_fn)
 
+    os.makedirs(SAVE_FOLDER, exist_ok=True)
+        
     if args.freeze:
         for param in model.transformer.parameters():
             param.requires_grad = False
 
-    for epoch in range(NUM_EPOCHS):
-        train_loss = train_epoch(model, train_loader, loss_fn, optimizer, device)
-        val_loss, val_accuracy = eval_model(model, val_loader, loss_fn, device)
-        print(f"Epoch {epoch+1}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Val Accuracy: {val_accuracy:.4f}")
+    if args.load_model:
+        model, tokenizer = load_model(args.load_model, SAVE_FOLDER, MODEL_NAME, NUM_LABELS, args.hidden, device)
+        print("Model loaded successfully.")
+    else:
+        best_val_loss = float('inf')  # Initialize the best validation loss to infinity
 
-        # Log metrics to TensorBoard
-        writer.add_scalar('Loss/train', train_loss, epoch)
-        writer.add_scalar('Loss/val', val_loss, epoch)
-        writer.add_scalar('Accuracy/val', val_accuracy, epoch)
+        for epoch in range(NUM_EPOCHS):
+            train_loss = train_epoch(model, train_loader, loss_fn, optimizer, device)
+            val_loss, val_accuracy = eval_model(model, val_loader, loss_fn, device)
+            print(f"Epoch {epoch+1}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Val Accuracy: {val_accuracy:.4f}")
 
-        # Unfreeze transformer weights after half of the epoch iterations
-        if args.freeze:
-            if epoch == NUM_EPOCHS // 2:
-                for param in model.transformer.parameters():
-                    param.requires_grad = True
+            # Log metrics to TensorBoard
+            writer.add_scalar('Loss/train', train_loss, epoch)
+            writer.add_scalar('Loss/val', val_loss, epoch)
+            writer.add_scalar('Accuracy/val', val_accuracy, epoch)
 
-    os.makedirs(SAVE_FOLDER, exist_ok=True)
-    
-    # Save the model
-    torch.save(model.state_dict(), MODEL_SAVE)
-    tokenizer.save_pretrained(SAVE_FOLDER)
+            # Save the model if validation loss has decreased
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                torch.save(model.state_dict(), MODEL_SAVE)
+                print(f"Model saved with validation loss: {val_loss:.4f}")
 
-    # Make predictions for test data
-    # pdb.set_trace()
-    predict_test(test_loader, model, INFERENCE_SAVE, device)
+            # Unfreeze transformer weights after half of the epoch iterations
+            if args.freeze:
+                if epoch == NUM_EPOCHS // 2:
+                    for param in model.transformer.parameters():
+                        param.requires_grad = True
+
+        tokenizer.save_pretrained(SAVE_FOLDER)
+
+        # Make predictions for test data
+        # pdb.set_trace()
+        predict_test(test_loader, model, INFERENCE_SAVE, device)
 
     writer.close()
 
     print("The custom transformer was trained in the following configuration: ")
     print(args.model, args.seq_length, args.epochs, args.hidden, args.freeze)
-
 
 if __name__ == "__main__":
     main()
