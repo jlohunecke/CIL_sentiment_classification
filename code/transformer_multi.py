@@ -79,13 +79,6 @@ def custom_collate_fn(num_models):
         attention_mask_list = [torch.stack([item[f'attention_mask_{i}'] for item in batch]) for i in range(num_models)]
         labels = torch.stack([item['labels'] for item in batch])
 
-        # Log shapes
-        for i, input_ids in enumerate(input_ids_list):
-            print(f'input_ids_list[{i}] shape: {input_ids.shape}')
-        for i, attention_mask in enumerate(attention_mask_list):
-            print(f'attention_mask_list[{i}] shape: {attention_mask.shape}')
-        print(f'labels shape: {labels.shape}')
-
         return {
             'input_ids_list': input_ids_list,
             'attention_mask_list': attention_mask_list,
@@ -101,13 +94,6 @@ def train_epoch(model, data_loader, loss_fn, optimizer, device):
         input_ids_list = [input_ids.to(device) for input_ids in batch['input_ids_list']]
         attention_mask_list = [attention_mask.to(device) for attention_mask in batch['attention_mask_list']]
         labels = batch['labels'].to(device)
-
-        # Log shapes
-        for i, input_ids in enumerate(input_ids_list):
-            print(f'Epoch Train: input_ids_list[{i}] shape: {input_ids.shape}')
-        for i, attention_mask in enumerate(attention_mask_list):
-            print(f'Epoch Train: attention_mask_list[{i}] shape: {attention_mask.shape}')
-        print(f'Epoch Train: labels shape: {labels.shape}')
 
         optimizer.zero_grad()
         outputs = model(input_ids_list, attention_mask_list)
@@ -253,7 +239,9 @@ def main():
             torch.save(model.state_dict(), MODEL_SAVE)
             print(f"Model saved with validation loss: {val_loss:.4f}")
 
-    tokenizers[0].save_pretrained(SAVE_FOLDER)
+    for i, tokenizer in enumerate(tokenizers):
+        tokenizer.save_pretrained(os.path.join(SAVE_FOLDER, f'tokenizer_{i}'))
+    print(f"All tokenizers saved in {SAVE_FOLDER}")
 
     # Make predictions for test data
     predict_test(test_loader, model, INFERENCE_SAVE, device)
