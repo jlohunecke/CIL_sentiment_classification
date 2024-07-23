@@ -16,30 +16,34 @@ import matplotlib.pyplot as plt
 from load_data import load_data
 
 class CustomTextDataset(Dataset):
-    def __init__(self, encodings, labels):
-        self.encodings = encodings
+    def __init__(self, encodings_list, labels):
+        self.encodings_list = encodings_list
         self.labels = labels
 
     def __getitem__(self, idx):
-        item = {key: val[idx].clone().detach() for key, val in self.encodings.items()}
-        item['labels'] = self.labels[idx].clone().detach()
+        item = {f'input_ids_{i}': encodings['input_ids'][idx] for i, encodings in enumerate(self.encodings_list)}
+        item.update({f'attention_mask_{i}': encodings['attention_mask'][idx] for i, encodings in enumerate(self.encodings_list)})
+        item['labels'] = self.labels[idx]
         return item
 
     def __len__(self):
         return len(self.labels)
 
-def preprocess_data_for_transformer(X, y, tokenizer, max_len):
+def preprocess_data_for_transformer(X, y, tokenizers, max_len):
     if isinstance(X, pd.Series):
         X = X.tolist()
 
-    encodings = tokenizer(X, truncation=True, padding=True, max_length=max_len, return_tensors="pt")
-    
+    encodings_list = []
+    for tokenizer in tokenizers:
+        encodings = tokenizer(X, truncation=True, padding=True, max_length=max_len, return_tensors="pt")
+        encodings_list.append(encodings)
+
     labels = torch.tensor(y, dtype=torch.long)
-    
-    return CustomTextDataset(encodings, labels)
+    return CustomTextDataset(encodings_list, labels)
+
 
 class MultiModelTransformer(nn.Module):
-    def __init__(self, model_names, num_labels, hidden_width, hidden_depth):
+    def __init__(self, model_names, num_labels, hidden_depth, hidden_width):
         super(MultiModelTransformer, self).__init__()
         self.num_labels = num_labels
 
@@ -56,38 +60,57 @@ class MultiModelTransformer(nn.Module):
                 hidden_layers.append(nn.Linear(hidden_width, hidden_width))
             hidden_layers.append(nn.ReLU())
             hidden_layers.append(nn.Dropout(0.1))
-        nn.Linear(hidden_width, self.num_labels)
+        # Add the final layer
+        hidden_layers.append(nn.Linear(hidden_width, self.num_labels))
 
         self.custom_layers = nn.Sequential(*hidden_layers)
 
-    def forward(self, input_ids, attention_mask):
-        transformer_outputs = [transformer(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state[:, 0, :] for transformer in self.transformers]
+    def forward(self, input_ids_list, attention_mask_list):
+        transformer_outputs = [transformer(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state[:, 0, :] 
+                               for transformer, input_ids, attention_mask in zip(self.transformers, input_ids_list, attention_mask_list)]
         concatenated_output = torch.cat(transformer_outputs, dim=-1)
         sequence_output = self.dropout(concatenated_output)
         logits = self.custom_layers(sequence_output)
         return logits
 
-def custom_collate_fn(batch):
-    input_ids = torch.stack([item['input_ids'] for item in batch])
-    attention_mask = torch.stack([item['attention_mask'] for item in batch])
-    labels = torch.stack([item['labels'] for item in batch])
-    
-    return {
-        'input_ids': input_ids,
-        'attention_mask': attention_mask,
-        'labels': labels
-    }
+def custom_collate_fn(num_models):
+    def collate_fn(batch):
+        input_ids_list = [torch.stack([item[f'input_ids_{i}'] for item in batch]) for i in range(num_models)]
+        attention_mask_list = [torch.stack([item[f'attention_mask_{i}'] for item in batch]) for i in range(num_models)]
+        labels = torch.stack([item['labels'] for item in batch])
+
+        # Log shapes
+        for i, input_ids in enumerate(input_ids_list):
+            print(f'input_ids_list[{i}] shape: {input_ids.shape}')
+        for i, attention_mask in enumerate(attention_mask_list):
+            print(f'attention_mask_list[{i}] shape: {attention_mask.shape}')
+        print(f'labels shape: {labels.shape}')
+
+        return {
+            'input_ids_list': input_ids_list,
+            'attention_mask_list': attention_mask_list,
+            'labels': labels
+        }
+    return collate_fn
+
 
 def train_epoch(model, data_loader, loss_fn, optimizer, device):
     model.train()
     total_loss = 0
     for batch in tqdm(data_loader):
-        input_ids = batch['input_ids'].to(device)
-        attention_mask = batch['attention_mask'].to(device)
+        input_ids_list = [input_ids.to(device) for input_ids in batch['input_ids_list']]
+        attention_mask_list = [attention_mask.to(device) for attention_mask in batch['attention_mask_list']]
         labels = batch['labels'].to(device)
 
+        # Log shapes
+        for i, input_ids in enumerate(input_ids_list):
+            print(f'Epoch Train: input_ids_list[{i}] shape: {input_ids.shape}')
+        for i, attention_mask in enumerate(attention_mask_list):
+            print(f'Epoch Train: attention_mask_list[{i}] shape: {attention_mask.shape}')
+        print(f'Epoch Train: labels shape: {labels.shape}')
+
         optimizer.zero_grad()
-        outputs = model(input_ids, attention_mask)
+        outputs = model(input_ids_list, attention_mask_list)
         loss = loss_fn(outputs, labels)
         loss.backward()
         optimizer.step()
@@ -101,11 +124,11 @@ def eval_model(model, data_loader, loss_fn, device):
     all_labels = []
     with torch.no_grad():
         for batch in data_loader:
-            input_ids = batch['input_ids'].to(device)
-            attention_mask = batch['attention_mask'].to(device)
+            input_ids_list = [input_ids.to(device) for input_ids in batch['input_ids_list']]
+            attention_mask_list = [attention_mask.to(device) for attention_mask in batch['attention_mask_list']]
             labels = batch['labels'].to(device)
 
-            outputs = model(input_ids, attention_mask)
+            outputs = model(input_ids_list, attention_mask_list)
             loss = loss_fn(outputs, labels)
             total_loss += loss.item()
 
@@ -122,9 +145,9 @@ def predict_test(test_loader, model, save_path, device):
     print("predicting on test set...")
     with torch.no_grad():
         for i, batch in tqdm(enumerate(test_loader), total=int(len(test_loader.dataset) // test_loader.batch_size)):
-            input_ids = batch['input_ids'].to(device)
-            attention_mask = batch['attention_mask'].to(device)
-            probabilities = model(input_ids, attention_mask)
+            input_ids_list = [input_ids.to(device) for input_ids in batch['input_ids_list']]
+            attention_mask_list = [attention_mask.to(device) for attention_mask in batch['attention_mask_list']]
+            probabilities = model(input_ids_list, attention_mask_list)
             predictions = torch.argmax(probabilities, dim=1)
             output[i*test_loader.batch_size:(i+1)*test_loader.batch_size, 0] = predictions
     df = pd.DataFrame(output.int().numpy(), columns=['Prediction'])
@@ -132,6 +155,12 @@ def predict_test(test_loader, model, save_path, device):
     df['Id'] = df.reset_index(drop=True).index + 1
     df.to_csv(save_path, index=False)
     print("saved test set predictions to", save_path)
+
+def print_trainable_parameters(model):
+    print("Trainable parameters:")
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            print(name)
 
 def main():
     parser = argparse.ArgumentParser(description="Choose hyperparameters for transformer training")
@@ -165,30 +194,30 @@ def main():
     writer = SummaryWriter()
 
     # Adapted from Kai's GRU implementation
-    train_path_neg = os.getcwd() + "/twitter-datasets/train_neg_full.txt"
-    train_path_pos = os.getcwd() + "/twitter-datasets/train_pos_full.txt"
+    train_path_neg = os.getcwd() + "/twitter-datasets/train_neg.txt"
+    train_path_pos = os.getcwd() + "/twitter-datasets/train_pos.txt"
     test_path = os.getcwd() + "/twitter-datasets/test_data.txt"
 
     X_train, y_train, X_val, y_val, X_test, y_test_dummy = load_data(train_path_neg, train_path_pos, test_path, val_split=0.8, frac=1.0)
 
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAMES[0])
+    tokenizers = [AutoTokenizer.from_pretrained(model_name) for model_name in MODEL_NAMES]
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     n_gpus = torch.cuda.device_count()
     print(f"Training on {n_gpus} GPUs.")
 
     # Initialize model, optimizer, loss
-    model = MultiModelTransformer(model_names=MODEL_NAMES, num_labels=NUM_LABELS, hidden_width=args.hidden_width, hidden_depth=args.hidden_depth).to(device)
+    model = MultiModelTransformer(model_names=MODEL_NAMES, num_labels=NUM_LABELS, hidden_depth=args.hidden_depth, hidden_width=args.hidden_width).to(device)
     optimizer = AdamW(model.parameters(), lr=LEARNING_RATE)
     loss_fn = nn.CrossEntropyLoss()
 
-    train_dataset = preprocess_data_for_transformer(X_train, y_train, tokenizer, MAX_SEQ_LENGTH)
-    val_dataset = preprocess_data_for_transformer(X_val, y_val, tokenizer, MAX_SEQ_LENGTH)
-    test_dataset = preprocess_data_for_transformer(X_test, y_test_dummy, tokenizer, MAX_SEQ_LENGTH)
+    train_dataset = preprocess_data_for_transformer(X_train, y_train, tokenizers, MAX_SEQ_LENGTH)
+    val_dataset = preprocess_data_for_transformer(X_val, y_val, tokenizers, MAX_SEQ_LENGTH)
+    test_dataset = preprocess_data_for_transformer(X_test, y_test_dummy, tokenizers, MAX_SEQ_LENGTH)
 
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=custom_collate_fn)
-    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=custom_collate_fn)
-    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=custom_collate_fn)
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=custom_collate_fn(len(MODEL_NAMES)))
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=custom_collate_fn(len(MODEL_NAMES)))
+    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=custom_collate_fn(len(MODEL_NAMES)))
 
     os.makedirs(SAVE_FOLDER, exist_ok=True)
         
@@ -196,11 +225,19 @@ def main():
         for transformer in model.transformers:
             for param in transformer.parameters():
                 param.requires_grad = False
+        print_trainable_parameters(model)
 
     
     best_val_loss = float('inf')  # Initialize the best validation loss to infinity
 
     for epoch in range(NUM_EPOCHS):
+        if args.freeze and epoch == NUM_EPOCHS // 2:
+            for transformer in model.transformers:
+                for param in transformer.parameters():
+                    param.requires_grad = True
+            print(f"Unfreezing done at epoch {epoch + 1}:")
+            print_trainable_parameters(model)
+
         train_loss = train_epoch(model, train_loader, loss_fn, optimizer, device)
         val_loss, val_accuracy = eval_model(model, val_loader, loss_fn, device)
         print(f"Epoch {epoch+1}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Val Accuracy: {val_accuracy:.4f}")
@@ -216,14 +253,7 @@ def main():
             torch.save(model.state_dict(), MODEL_SAVE)
             print(f"Model saved with validation loss: {val_loss:.4f}")
 
-        # Unfreeze transformer weights after half of the epoch iterations
-        if args.freeze:
-            if epoch == NUM_EPOCHS // 2:
-                for transformer in model.transformers:
-                    for param in transformer.parameters():
-                        param.requires_grad = True
-
-    tokenizer.save_pretrained(SAVE_FOLDER)
+    tokenizers[0].save_pretrained(SAVE_FOLDER)
 
     # Make predictions for test data
     predict_test(test_loader, model, INFERENCE_SAVE, device)
