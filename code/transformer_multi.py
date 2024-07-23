@@ -238,13 +238,15 @@ def main():
             best_val_loss = val_loss
             torch.save(model.state_dict(), MODEL_SAVE)
             print(f"Model saved with validation loss: {val_loss:.4f}")
-
+            print("Saving test predictions for this model.")
+            predict_test(test_loader, model, INFERENCE_SAVE, device)
+    
+    if not os.path.exists(INFERENCE_SAVE):
+        predict_test(test_loader, model, INFERENCE_SAVE, device)
+    
     for i, tokenizer in enumerate(tokenizers):
         tokenizer.save_pretrained(os.path.join(SAVE_FOLDER, f'tokenizer_{i}'))
     print(f"All tokenizers saved in {SAVE_FOLDER}")
-
-    # Make predictions for test data
-    predict_test(test_loader, model, INFERENCE_SAVE, device)
 
     writer.close()
 
