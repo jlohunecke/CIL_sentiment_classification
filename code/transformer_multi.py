@@ -180,8 +180,8 @@ def main():
     writer = SummaryWriter()
 
     # Adapted from Kai's GRU implementation
-    train_path_neg = os.getcwd() + "/twitter-datasets/train_neg.txt"
-    train_path_pos = os.getcwd() + "/twitter-datasets/train_pos.txt"
+    train_path_neg = os.getcwd() + "/twitter-datasets/train_neg_full.txt"
+    train_path_pos = os.getcwd() + "/twitter-datasets/train_pos_full.txt"
     test_path = os.getcwd() + "/twitter-datasets/test_data.txt"
 
     X_train, y_train, X_val, y_val, X_test, y_test_dummy = load_data(train_path_neg, train_path_pos, test_path, val_split=0.8, frac=1.0)
@@ -215,6 +215,7 @@ def main():
 
     
     best_val_loss = float('inf')  # Initialize the best validation loss to infinity
+    best_val_acc = 0.0
 
     for epoch in range(NUM_EPOCHS):
         if args.freeze and epoch == NUM_EPOCHS // 2:
@@ -234,10 +235,10 @@ def main():
         writer.add_scalar('Accuracy/val', val_accuracy, epoch)
 
         # Save the model if validation loss has decreased
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
+        if val_accuracy < best_val_acc:
+            best_val_acc = val_accuracy
             torch.save(model.state_dict(), MODEL_SAVE)
-            print(f"Model saved with validation loss: {val_loss:.4f}")
+            print(f"Model saved with validation loss: {val_loss:.4f} and accuracy: {val_accuracy:.4f}")
             print("Saving test predictions for this model.")
             predict_test(test_loader, model, INFERENCE_SAVE, device)
     
@@ -251,7 +252,7 @@ def main():
     writer.close()
 
     print("The multi-model transformer was trained in the following configuration: ")
-    print(args.models, args.seq_length, args.epochs, args.hidden, args.freeze)
+    print(args.models, args.seq_length, args.epochs, args.hidden_width, args.hidden_depth, args.freeze)
 
 if __name__ == "__main__":
     main()
