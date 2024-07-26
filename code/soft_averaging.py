@@ -90,10 +90,14 @@ def main():
     parser.add_argument('--hidden', type=int, required=True, help="Number of neurons in hidden layer")
     parser.add_argument('--inference_name', type=str, required=False, help="After training, model will predict results for the test dataset and save them to 'inference_name.csv' in the save folder")
     parser.add_argument('--batch', type=int, help="batch size, default is 16")
+    parser.add_argument('--majority', type=bool, default=False, help="If true, we perform majority vote with the passed models.")
     
     args = parser.parse_args()
 
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+    if (len(args.model_names)%2 == 0) and args.majority:
+        raise ValueError("Majority vote can only be performed with an uneven number of models.")
 
     NUM_LABELS = 2
     MAX_SEQ_LENGTH = args.seq_length
@@ -132,16 +136,24 @@ def main():
     with torch.no_grad():
         for batches in tqdm(zip(*test_loaders), total=len(test_loaders[0])):
             batch_size = batches[0]['input_ids'].size(0)
-            probabilities = torch.zeros((batch_size, NUM_LABELS)).to(device)
-            
+            if args.majority:
+                all_predictions = torch.zeros((batch_size, len(models)), dtype=torch.long).to(device)
+            else:
+                probabilities = torch.zeros((batch_size, NUM_LABELS)).to(device)
+        
             for j, batch in enumerate(batches):
                 input_ids = batch['input_ids'].to(device)
                 attention_mask = batch['attention_mask'].to(device)
                 outputs = models[j](input_ids, attention_mask)
                 probabilities += outputs
+                predictions = torch.argmax(outputs, dim=1)
+                all_predictions[:, j] = predictions
             
-            probabilities /= len(models)
-            predictions = torch.argmax(probabilities, dim=1)
+            if args.majority:
+                predictions, _ = torch.mode(all_predictions, dim=1)
+            else:
+                probabilities /= len(models)
+                predictions = torch.argmax(probabilities, dim=1)
             output[start_idx:start_idx + batch_size, 0] = predictions
             start_idx += batch_size
 
