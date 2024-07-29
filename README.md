@@ -9,6 +9,9 @@
 
 Kai Lascheit, Tjark Behrens and Jacob Hunecke 
 
+## General
+This GitHub contains the code for our model that we built within the Sentiment Analysis competition of the course Computational Intelligence Lab by Prof. Valentina Boeva and Prof. Thomas Hofmann.
+Together with the created paper, this repository contains all the necessary information to understand and reproduce the results of our project work.
 
 ## Getting Started
 Install dependencies
@@ -28,6 +31,7 @@ The remaining packages can be installed using our provided [requirements.txt](re
 pip install -r requirements.txt
 ```
 
+## Experiments
 This repository already contains a small version of the provided twitter datasets. Keep in mind, that our final version was trained on the full dataset. Either substitute the according files ([train_pos.txt](twitter-datasets/train_pos.txt), [train_neg.txt](twitter-datasets/train_neg.txt)) or change the paths in line 311 and 312 of [transformer_multi.py](code/transformer_multi.py) to the full dataset.
 
 To reproduce the results from our best submission in the Kaggle competition, run the command below from the main directory. Be aware that training requires a GPU with at least 24GB of GPU and lasts roughly 50 hours (or more depending on the computational ressources). 
