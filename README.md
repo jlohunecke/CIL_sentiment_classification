@@ -32,10 +32,10 @@ This repository already contains a small version of the provided twitter dataset
 
 To reproduce the results from our best submission in the Kaggle competition, run the command below from the main directory. Be aware that training requires a GPU with at least 24GB of GPU and lasts roughly 50 hours (or more depending on the computational ressources). 
 ```
-python code/transformer_multi.py --models 'bert-large-uncased'  --seq_length 70 --epochs 20 --folder "multi" --save_name "multi-model" --hidden_width 512 --hidden_depth 2 --inference_name "multi" --batch=32 --freeze
+python code/transformer_multi.py --models 'bert-large-uncased' 'roberta-large-openai-detector' 'facebook/bart-large-mnli' --seq_length 70 --epochs 20 --folder "multi" --save_name "multi-model" --hidden_width 512 --hidden_depth 2 --inference_name "multi" --batch=32 --freeze
 ```
 
-This will create a folder called 'multi' containing the model weights with the best validation accuracy (multi-model.pth) and a corresponding prediction file that is ready to submit for the Kaggle competition.
+This will create a folder called 'multi' containing the model weights with the best validation accuracy (multi-model.pth) and a corresponding prediction file that is ready to submit for the Kaggle competition (multi.csv).
 To achieve other results from our experiment section, check out the possible variations of the argparse arguments. For more information: python code/transformer_multi.py --help
 
 
