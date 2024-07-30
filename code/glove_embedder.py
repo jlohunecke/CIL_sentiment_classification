@@ -1,8 +1,6 @@
 import numpy as np
 import gensim.downloader as api
 from scipy.sparse import csr_matrix
-from gensim.scripts.glove2word2vec import glove2word2vec
-from gensim.models import KeyedVectors
 
 
 class GloveEmbedder():
