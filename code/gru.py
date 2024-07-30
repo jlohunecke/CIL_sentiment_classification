@@ -13,7 +13,7 @@ import torch.nn.functional as F
 import pdb
 from transformers import AutoTokenizer
 
-from load_data import load_data
+from preprocess import load_data
 
 
 class GRUModel(nn.Module):

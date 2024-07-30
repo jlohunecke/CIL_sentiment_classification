@@ -3,9 +3,7 @@ from sklearn.metrics import accuracy_score
 from sklearn.feature_extraction.text import TfidfVectorizer
 import argparse
 
-from load_data import load_data
-from preprocess import preprocess
-from glove_embedder import GloveEmbedder
+from preprocess import preprocess, load_data, GloveEmbedder
 
 
 if __name__ == "__main__":
