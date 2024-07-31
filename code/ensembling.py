@@ -9,97 +9,10 @@ from datasets import Dataset
 from transformers import AutoTokenizer, AutoModel, AutoConfig
 from torch.utils.data import DataLoader
 
-from load_data import load_data
+from preprocess import load_data
 
-class CustomTextDataset(Dataset):
-    """Dataset class for handling multiple transformer model encodings and labels."""
-    def __init__(self, encodings_list, labels):
-        self.encodings_list = encodings_list
-        self.labels = labels
-
-    def __getitem__(self, idx):
-        item = {f'input_ids_{i}': encodings['input_ids'][idx] for i, encodings in enumerate(self.encodings_list)}
-        item.update({f'attention_mask_{i}': encodings['attention_mask'][idx] for i, encodings in enumerate(self.encodings_list)})
-        item['labels'] = self.labels[idx]
-        return item
-
-    def __len__(self):
-        return len(self.labels)
-
-class MultiModelTransformer(nn.Module):
-    """Neural network class for combining multiple transformer models."""
-    def __init__(self, model_names, num_labels, hidden_depth, hidden_width):
-        super(MultiModelTransformer, self).__init__()
-        self.num_labels = num_labels
-
-        self.transformers = nn.ModuleList([AutoModel.from_pretrained(model_name) for model_name in model_names])
-        hidden_size = sum([AutoConfig.from_pretrained(model_name).hidden_size for model_name in model_names])
-        
-        self.dropout = nn.Dropout(0.1)
-        
-        hidden_layers = []
-        for i in range(hidden_depth):
-            if i == 0:
-                hidden_layers.append(nn.Linear(hidden_size, hidden_width))
-            else:
-                hidden_layers.append(nn.Linear(hidden_width, hidden_width))
-            hidden_layers.append(nn.ReLU())
-            hidden_layers.append(nn.Dropout(0.1))
-        
-        hidden_layers.append(nn.Linear(hidden_width, self.num_labels))
-
-        self.custom_layers = nn.Sequential(*hidden_layers)
-
-    def forward(self, input_ids_list, attention_mask_list):
-        transformer_outputs = [transformer(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state[:, 0, :] 
-                               for transformer, input_ids, attention_mask in zip(self.transformers, input_ids_list, attention_mask_list)]
-        concatenated_output = torch.cat(transformer_outputs, dim=-1)
-        sequence_output = self.dropout(concatenated_output)
-        logits = self.custom_layers(sequence_output)
-        return logits
-
-def preprocess_data_for_transformer(X, y, tokenizers, max_len):
-    if isinstance(X, pd.Series):
-        X = X.tolist()
-
-    encodings_list = []
-    for tokenizer in tokenizers:
-        encodings = tokenizer(X, truncation=True, padding=True, max_length=max_len, return_tensors="pt")
-        encodings_list.append(encodings)
-
-    labels = torch.tensor(y, dtype=torch.long)
-    return CustomTextDataset(encodings_list, labels)
-
-def custom_collate_fn(num_models):
-    def collate_fn(batch):
-        input_ids_list = [torch.stack([item[f'input_ids_{i}'] for item in batch]) for i in range(num_models)]
-        attention_mask_list = [torch.stack([item[f'attention_mask_{i}'] for item in batch]) for i in range(num_models)]
-        labels = torch.stack([item['labels'] for item in batch])
-
-        return {
-            'input_ids_list': input_ids_list,
-            'attention_mask_list': attention_mask_list,
-            'labels': labels
-        }
-    return collate_fn
-
-def load_multi_model_and_tokenizers(model_names, model_folder, directory, num_labels, hidden_depth, hidden_width, device):
-    model_path = os.path.join(directory, model_folder)
-    
-    tokenizers = [AutoTokenizer.from_pretrained(os.path.join(model_path, f'tokenizer_{i}')) for i in range(len(model_names))]
-
-    pth_files = [f for f in os.listdir(model_path) if f.endswith('.pth')]
-    if len(pth_files) != 1:
-        raise ValueError("There should be exactly one .pth file in the directory.")
-    pth_file = pth_files[0]
-
-    model = MultiModelTransformer(model_names=model_names, num_labels=num_labels, hidden_depth=hidden_depth, hidden_width=hidden_width)
-    
-    model.load_state_dict(torch.load(os.path.join(model_path, pth_file), map_location=device))
-    model.to(device)
-    model.eval()
-
-    return model, tokenizers
+from transformer_multi import CustomTextDataset, MultiModelTransformer
+from transformer_multi import preprocess_data_for_transformer, custom_collate_fn, load_multi_model_and_tokenizers
 
 def main():
     parser = argparse.ArgumentParser(description="Choose hyperparameters for transformer training")
