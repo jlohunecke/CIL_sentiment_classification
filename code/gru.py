@@ -1,167 +1,278 @@
-from os import getcwd
+import pandas as pd
+import numpy as np
 import torch
 import torch.nn as nn
-import torchtext; torchtext.disable_torchtext_deprecation_warning()
-from torchtext.data import get_tokenizer
-from collections import Counter
-from torch.nn.utils.rnn import pad_sequence
 import torch.optim as optim
-from torch.utils.data import TensorDataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, TensorDataset
+from sklearn.model_selection import train_test_split
+import re
+from os import getcwd
+from sklearn.feature_extraction.text import TfidfVectorizer
+import argparse
+import torch.nn.functional as F
 import pdb
-import pickle
-import numpy as np
+from transformers import AutoTokenizer
 
-from load_data import load_data
-from preprocess import preprocess
-from glove import get_glove_embeddings, create_embedding_matrix
+from preprocess import load_data
 
-# hyperparams
-MAX_SEQUENCE_LENGTH = 40
-MAX_VOCAB_SIZE = 20000
-GRU_UNITS = 64
-NUM_EPOCHS = 50
-BATCH_SIZE = 5000
-DROPOUT = 0.4
-WEIGHT_DECAY = 1e-4
-NUM_LAYERS = 1
-USE_GLOVE = True
-# settings
-RETRAIN = True
-LOAD_PREPROCESSED = True
-EMBEDDING_DIM = 25
-PREPROCESSED_PATH = getcwd() + "/twitter-datasets/preprocessed_data.pkl"
-GLOVE_PATH = getcwd() + "/glove_data/glove.twitter.27B." + str(EMBEDDING_DIM) + "d.txt"
-USE_JACOBS_PREPROCESSING = False
-MODEL_SAVE_PATH = getcwd() + "/models/model_weights.pth"
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-# load data
-print("Loading and preprocessing data")
-if LOAD_PREPROCESSED:
-    with open(PREPROCESSED_PATH, 'rb') as f:
-        preprocessed_data = pickle.load(f)
-        X_train_, X_val_, X_test_ = preprocessed_data["X_train_"], preprocessed_data["X_val_"], preprocessed_data["X_test_"]
-        X_train, X_val, X_test = preprocessed_data["X_train"], preprocessed_data["X_val"], preprocessed_data["X_test"]
-        y_train, y_val = preprocessed_data["y_train"], preprocessed_data["y_val"]
-else: 
+class GRUModel(nn.Module):
+    def __init__(self, vocab_size, embedding_dim, hidden_dim, output_dim, n_layers, bidirectional, dropout, embedding_matrix, use_glove):
+        """
+        Initializes the GRU model with specified parameters.
+
+        Args:
+            vocab_size (int): Size of the vocabulary.
+            embedding_dim (int): Dimension of embeddings.
+            hidden_dim (int): Dimension of GRU hidden layers.
+            output_dim (int): Dimension of the output layer.
+            n_layers (int): Number of GRU layers.
+            bidirectional (bool): If the GRU is bidirectional.
+            dropout (float): Dropout rate.
+            embedding_matrix (torch.Tensor): Pre-trained embedding matrix.
+            use_glove (bool): Whether to use GloVe embeddings or not
+        """
+        super(GRUModel, self).__init__()
+        self.use_glove = use_glove
+        self.num_layers = n_layers
+        self.hidden_dim = hidden_dim
+        self.bidirectional = bidirectional
+        if self.use_glove:
+            self.embedding = nn.Embedding.from_pretrained(embedding_matrix, freeze=True)
+        self.rnn = nn.GRU(embedding_dim, hidden_dim, num_layers=n_layers, bidirectional=bidirectional, batch_first=True, dropout=dropout)
+        self.fc = nn.Linear(hidden_dim * 2 if bidirectional else hidden_dim, output_dim)
+        self.dropout = nn.Dropout(dropout)
+        if not use_glove:
+            self.fc1 = nn.Linear(vocab_size, hidden_dim)
+            self.fc2 = nn.Linear(hidden_dim, embedding_dim)
+
+    def forward(self, input_ids):
+        """
+        Forward pass for the GRU model.
+
+        Args:
+            input_ids (torch.Tensor): Input token IDs.
+
+        Returns:
+            torch.Tensor: Model output logits.
+        """
+        if self.use_glove:
+            embedded = self.dropout(self.embedding(input_ids))
+            _, hidden = self.rnn(embedded)
+        else:
+            x = F.normalize(input_ids, p=2, dim=1) # normalize first for better results
+            x = self.dropout(F.relu(self.fc1(x)))
+            x = F.relu(self.fc2(x))
+            x = x.unsqueeze(2).float()
+            inputs = torch.zeros(self.num_layers * 2 if self.bidirectional else self.num_layers, x.size(0), self.hidden_dim).to(x.device)
+            _, hidden = self.rnn(x, inputs)
+        if self.rnn.bidirectional:
+            hidden = torch.cat((hidden[-2,:,:], hidden[-1,:,:]), dim=1)
+        else:
+            hidden = hidden[-1,:,:]
+        output = self.fc(hidden)
+        return output
+
+def clean_text(text):
+    """
+    Cleans the input text by removing HTML tags, non-alphabetic characters, and extra whitespace.
+
+    Args:
+        text (str): The input text to clean.
+
+    Returns:
+        str: The cleaned text.
+    """
+    text = text.lower()
+    text = re.sub(r'<[^>]+>', ' ', text)  # Remove HTML tags
+    text = re.sub(r'[^a-z\s]', '', text)  # Remove non-alphabetic characters
+    text = re.sub(r'\s+', ' ', text)  # Remove extra whitespace
+    return text
+
+def load_glove_embeddings(glove_path, word_index, embedding_dim, vocab_size):
+    """
+    Loads pre-trained GloVe embeddings.
+
+    Args:
+        glove_path (str): Path to the GloVe file.
+        word_index (dict): Word index from the tokenizer.
+        embedding_dim (int): Dimension of embeddings.
+        vocab_size (int): Size of the vocabulary.
+
+    Returns:
+        torch.Tensor: Embedding matrix.
+    """
+    embedding_index = {}
+    with open(glove_path, encoding='utf-8') as f:
+        for line in f:
+            values = line.split()
+            word = values[0]
+            coefs = np.asarray(values[1:], dtype='float32')
+            embedding_index[word] = coefs
+
+    embedding_matrix = np.zeros((vocab_size, embedding_dim))
+    for word, i in word_index.items():
+        if i < vocab_size:
+            embedding_vector = embedding_index.get(word)
+            if embedding_vector is not None:
+                embedding_matrix[i] = embedding_vector
+
+    return torch.tensor(embedding_matrix, dtype=torch.float)
+
+def train_epoch(model, data_loader, loss_fn, optimizer, device):
+    """
+    Trains the model for one epoch.
+
+    Args:
+        model (nn.Module): The model to train.
+        data_loader (DataLoader): DataLoader for the training data.
+        loss_fn (nn.Module): Loss function.
+        optimizer (optim.Optimizer): Optimizer.
+        device (torch.device): Device to run the training on.
+
+    Returns:
+        tuple: Training accuracy and average loss.
+    """
+    model.train()
+    losses = []
+    correct_predictions = 0
+
+    for input_ids, labels in data_loader:
+
+        outputs = model(input_ids)
+        loss = loss_fn(outputs, labels.unsqueeze(1).float())
+
+        correct_predictions += torch.sum((outputs > 0.5) == labels.unsqueeze(1)).item()
+        losses.append(loss.item())
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+    return correct_predictions / len(data_loader.dataset), np.mean(losses)
+
+def eval_model(model, data_loader, loss_fn, device):
+    """
+    Evaluates the model.
+
+    Args:
+        model (nn.Module): The model to evaluate.
+        data_loader (DataLoader): DataLoader for the evaluation data.
+        loss_fn (nn.Module): Loss function.
+        device (torch.device): Device to run the evaluation on.
+
+    Returns:
+        tuple: Evaluation accuracy and average loss.
+    """
+    model.eval()
+    losses = []
+    correct_predictions = 0
+
+    with torch.no_grad():
+        for input_ids, labels in data_loader:
+
+            outputs = model(input_ids)
+            loss = loss_fn(outputs, labels.unsqueeze(1).float())
+
+            correct_predictions += torch.sum((outputs > 0.5) == labels.unsqueeze(1)).item()
+            losses.append(loss.item())
+
+    return correct_predictions / len(data_loader.dataset), np.mean(losses)
+
+def main(args):
+    """
+    Main function to train and evaluate a GRU-based model using either GloVe or TF-IDF embeddings.
+
+    Parameters:
+        args (argparse.Namespace): Command-line arguments specifying the type of embedding to use ('glove' or 'tfidf').
+    """
+    # Parameters
+    vocab_size = 30000
+    tfidf_features = 1000
+    embedding_dim = 100
+    max_length = 40
+    dropout = 0.2 if args.embedding == "tfidf" else 0.5
+    hidden_dim = 64
+    n_layers = 2
+    bidirectional = True
+    output_dim = 1
+    batch_size = 32
+    num_epochs = 40
+    learning_rate = 1e-3
+
+    # Read and clean data
     train_path_neg = getcwd() + "/twitter-datasets/train_neg.txt"
     train_path_pos = getcwd() + "/twitter-datasets/train_pos.txt"
     test_path = getcwd() + "/twitter-datasets/test_data.txt"
-    X_train, y_train, X_val, y_val, X_test = load_data(train_path_neg, train_path_pos, test_path, val_split=0.8, frac=1.0)
-    X_train_tokens, X_val_tokens, X_test_tokens = preprocess(X_train, X_val, X_test)
-    X_train_ = [' '.join(tokens) for tokens in X_train_tokens]
-    X_val_ = [' '.join(tokens) for tokens in X_val_tokens]
-    X_test_ = [' '.join(tokens) for tokens in X_test_tokens]
-    with open(PREPROCESSED_PATH, 'wb') as f:
-        preprocessed_data = {
-            "X_train_" : X_train_,
-            "X_val_" : X_val_,
-            "X_test_" : X_test_,
-            "X_train" : X_train,
-            "X_val" : X_val,
-            "X_test" : X_test,
-            "y_train" : y_train,
-            "y_val" : y_val
-        }
-        pickle.dump(preprocessed_data, f)
+    X_train, y_train, X_val, y_val, X_test, _ = load_data(train_path_neg, train_path_pos, test_path, val_split=0.9, frac=0.2)
 
-# preprocess
-def preprocess_for_rnn(X, y):
-    if USE_JACOBS_PREPROCESSING:
-        tokenized_sequences = [sequence.split(" ") for sequence in X]
-    else:
-        tokenizer = get_tokenizer("basic_english")
-        tokenized_sequences = X.apply(tokenizer)
-    all_tokens = [elt for sequence in tokenized_sequences for elt in sequence]
-    counter = Counter(all_tokens)
-    indexed_vocab = {elt[0] : idx for idx, elt in enumerate(counter.most_common(MAX_VOCAB_SIZE))}
-    indexed_data = [torch.tensor([indexed_vocab.get(token, MAX_VOCAB_SIZE) for token in sequence]) for sequence in tokenized_sequences]
-    padded_data = pad_sequence(indexed_data, batch_first=True).to(DEVICE)
-    labels = torch.Tensor(y).to(DEVICE)
-    return TensorDataset(padded_data[:, :MAX_SEQUENCE_LENGTH], labels), indexed_vocab
+    data = {"text": X_train.values.tolist(), "label": y_train.values.tolist()}
+    data["text"] += X_val.values.tolist()
+    data["label"] += y_val.values.tolist()
+    df = pd.DataFrame(data)
+    df['text'] = df['text'].apply(clean_text)
 
-if USE_JACOBS_PREPROCESSING:
-    train_dataset, vocab = preprocess_for_rnn(X_train_, y_train)
-    val_dataset, _ = preprocess_for_rnn(X_val_, y_val)
-else:
-    train_dataset, vocab = preprocess_for_rnn(X_train, y_train)
-    val_dataset, _ = preprocess_for_rnn(X_val, y_val)
+    if args.embedding == "glove":
+        # Tokenize the text data
+        tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
+        tokenizer.model_max_length = max_length
+        tokenizer.add_special_tokens({'pad_token': '[PAD]'})
+        sequences = tokenizer(df['text'].tolist(), padding='max_length', truncation=True, max_length=max_length)
+        padded_sequences = np.array(sequences['input_ids'])
+        labels = df['label'].values
+        # Split the data into training and testing sets
+        X_train, X_test, y_train, y_test = train_test_split(padded_sequences, labels, test_size=0.2, random_state=42)
+        # Load GloVe embeddings
+        glove_path = getcwd() + '/glove_data/glove.twitter.27B.' + str(embedding_dim) + 'd.txt'
+        embedding_matrix = load_glove_embeddings(glove_path, tokenizer.vocab, embedding_dim, vocab_size)
+        # Create datasets and dataloaders
+        train_dataset = TensorDataset(torch.tensor(X_train), torch.tensor(y_train))
+        test_dataset = TensorDataset(torch.tensor(X_test), torch.tensor(y_test))
+    elif args.embedding == "tfidf":
+        # Tokenize the text data
+        vectorizer = TfidfVectorizer(max_features=tfidf_features)
+        X_tfidf = vectorizer.fit_transform(df['text']).toarray()
+        X_tfidf_padded = np.pad(X_tfidf, ((0, 0), (0, tfidf_features - X_tfidf.shape[1])), 'constant')
+        labels = df['label'].values
+        # Split the data into training and testing sets
+        X_train, X_test, y_train, y_test = train_test_split(X_tfidf_padded, labels, test_size=0.2, random_state=42)
+        # Create tensor datasets
+        X_train_tensor = torch.tensor(X_train, dtype=torch.float32)
+        X_test_tensor = torch.tensor(X_test, dtype=torch.float32)
+        y_train_tensor = torch.tensor(y_train, dtype=torch.long)
+        y_test_tensor = torch.tensor(y_test, dtype=torch.long)
+        train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
+        test_dataset = TensorDataset(X_test_tensor, y_test_tensor)
 
+    # Create dataloaders
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size)
 
-embedding_matrix = create_embedding_matrix(vocab, GLOVE_PATH, np.zeros(EMBEDDING_DIM)) if USE_GLOVE else None
+    # Initialize the model, loss function, optimizer
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if args.embedding == "glove":
+        model = GRUModel(vocab_size, embedding_dim, hidden_dim, output_dim, n_layers, bidirectional, dropout, embedding_matrix, True).to(device)
+    elif args.embedding == "tfidf":
+        model = GRUModel(tfidf_features, 1, hidden_dim, output_dim, n_layers, bidirectional, dropout, None, False).to(device)
+    loss_fn = nn.BCEWithLogitsLoss()
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
-# define RNN
-class SentimentAnalysisRNN(nn.Module):
-    def __init__(self, max_vocab_size, embedding_dim, gru_units, glove_embeddings=None):
-        super(SentimentAnalysisRNN, self).__init__()        
-        if USE_GLOVE:
-            self.embedding = nn.Embedding.from_pretrained(glove_embeddings)
-        else:
-            self.embedding = nn.Embedding(max_vocab_size, embedding_dim)
-            # self.embedding.weight.requires_grad = False  # Optionally freeze the embedding layer
-        self.gru = nn.GRU(embedding_dim, gru_units, dropout=DROPOUT, batch_first=True, num_layers=NUM_LAYERS)
-        self.dropout = nn.Dropout(DROPOUT)
-        self.fc = nn.Linear(gru_units, 1)
-        self.sigmoid = nn.Sigmoid()
+    # Train and evaluate the model
+    for epoch in range(num_epochs):
+        train_acc, train_loss = train_epoch(model, train_loader, loss_fn, optimizer, device)
+        test_acc, test_loss = eval_model(model, test_loader, loss_fn, device)
+        print(f'Epoch {epoch + 1}/{num_epochs}, Train Loss: {train_loss:.4f}, Train Accuracy: {train_acc:.4f}, Validation Accuracy: {test_acc:.4f}')
 
-    def forward(self, x):
-        embedded = self.embedding(x)
-        embedded = embedded.float()
-        output, _ = self.gru(embedded)
-        output = self.dropout(output[:, -1, :])  # Taking the last hidden state
-        output = self.fc(output)
-        output = self.sigmoid(output)
-        return output.squeeze(1)  # Squeeze to remove the extra dimension
+if __name__ == "__main__":
+    """
+    Entry point of the script. Parses command-line arguments and calls the main function.
     
-# train RNN
-print("Training started")
-train_dataloader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
-val_dataloader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
-model = SentimentAnalysisRNN(MAX_VOCAB_SIZE, EMBEDDING_DIM, GRU_UNITS, embedding_matrix).to(DEVICE)
-if RETRAIN:
-    criterion = nn.BCELoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=WEIGHT_DECAY)
-    for epoch in range(NUM_EPOCHS):
-        # perform 
-        model.train()  # Set the model to training mode
-        train_loss = 0.0
-        train_correct = 0
-        train_total = 0
-        for inputs, labels in train_dataloader:
-            optimizer.zero_grad()  # Zero the gradients
-            outputs = model(inputs) # forward pass
-            loss = criterion(outputs, labels.float()) # compute loss
-            loss.backward() # Backward pass   
-            optimizer.step() # Update the parameters        
-            train_loss += loss.item()
-            predicted = torch.round(outputs)
-            train_correct += (predicted == labels).sum().item()
-            train_total += labels.size(0)
-        train_loss /= len(train_dataloader)
-        train_accuracy = train_correct / train_total
-        # perform validation
-        model.eval()  # Set model to evaluation mode
-        val_loss = 0.0
-        val_correct = 0
-        val_total = 0
-        with torch.no_grad():  # Disable gradient computation for validation
-            for inputs, labels in val_dataloader:
-                outputs = model(inputs)
-                loss = criterion(outputs, labels.float())
-                val_loss += loss.item()
-                predicted = torch.round(outputs)
-                val_correct += (predicted == labels).sum().item()
-                val_total += labels.size(0)
-        val_loss /= len(val_dataloader)
-        val_accuracy = val_correct / val_total
-        print(f'Epoch {epoch+1}/{NUM_EPOCHS}, '
-            f'Train Loss: {train_loss:.4f}, '
-            f'Train Accuracy: {train_accuracy:.2%}, '
-            f'Val Loss: {val_loss:.4f}, '
-            f'Val Accuracy: {val_accuracy:.2%}')
-    print("Training finished")
-    torch.save(model.state_dict(), MODEL_SAVE_PATH)
-    print("Model weights saved to:", MODEL_SAVE_PATH)
-else:
-    model.load_state_dict(torch.load(MODEL_SAVE_PATH))
-    print("Loaded pretrained weights from:", MODEL_SAVE_PATH)
+    Command-line arguments:
+        --embedding (str): The type of embedding to use, either 'glove' or 'tfidf'. This argument is required.
+    """
+    # choose embedding type
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--embedding', type=str, required=True, help='type of embedding to use: glove or tfidf')
+    args = parser.parse_args()
+    assert args.embedding in ["glove", "tfidf"], "provided embedding method is not supported"
+    main(args)
