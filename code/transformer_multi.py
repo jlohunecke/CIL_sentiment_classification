@@ -9,6 +9,8 @@ from transformers import AutoTokenizer, AutoModel, AutoConfig
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
+import pdb
+from os import getcwd
 
 # custom data loader function
 from preprocess import load_data
@@ -204,7 +206,7 @@ def eval_model(model, data_loader, loss_fn, device, save_prediction=False):
     all_predictions = []
     all_labels = []
     with torch.no_grad():
-        for batch in data_loader:
+        for batch in tqdm(data_loader, desc="evaluating model"):
             input_ids_list = [input_ids.to(device) for input_ids in batch['input_ids_list']]
             attention_mask_list = [attention_mask.to(device) for attention_mask in batch['attention_mask_list']]
             labels = batch['labels'].to(device)
@@ -247,7 +249,7 @@ def predict_test(test_loader, model, save_path, device):
     print("Saved test set predictions to", save_path)
 
 def load_multi_model_and_tokenizers(model_names, model_folder, directory, num_labels, hidden_depth, hidden_width, device):
-    """
+    """                             
     Loads a MultiModelTransformer and its tokenizers from the specified directory.
     
     Args:
@@ -264,7 +266,8 @@ def load_multi_model_and_tokenizers(model_names, model_folder, directory, num_la
     """
     model_path = os.path.join(directory, model_folder)
     
-    tokenizers = [AutoTokenizer.from_pretrained(os.path.join(model_path, f'tokenizer_{i}')) for i in range(len(model_names))]
+    # tokenizers = [AutoTokenizer.from_pretrained(os.path.join(model_path, f'tokenizer_{i}')) for i in range(len(model_names))]
+    tokenizers = [AutoTokenizer.from_pretrained(model_name) for model_name in model_names]
 
     pth_files = [f for f in os.listdir(model_path) if f.endswith('.pth')]
     if len(pth_files) != 1:
@@ -327,9 +330,10 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    loss_fn = nn.CrossEntropyLoss()
+
     if args.load_model:
-        model, tokenizers = load_multi_model_and_tokenizers(model_names=MODEL_NAMES, model_folder=SAVE_FOLDER, num_labels=NUM_LABELS, hidden_depth=NUM_HIDDEN_DEPTH, hidden_width=NUM_HIDDEN_WIDTH, device=device)
-        
+        model, tokenizers = load_multi_model_and_tokenizers(model_names=MODEL_NAMES, model_folder=SAVE_FOLDER, directory=getcwd() + "/", num_labels=NUM_LABELS, hidden_depth=NUM_HIDDEN_DEPTH, hidden_width=NUM_HIDDEN_WIDTH, device=device)
         val_dataset = preprocess_data_for_transformer(X_val, y_val, tokenizers, MAX_SEQ_LENGTH)
         test_dataset = preprocess_data_for_transformer(X_test, y_test_dummy, tokenizers, MAX_SEQ_LENGTH)
         
@@ -337,9 +341,10 @@ def main():
         test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=custom_collate_fn(len(MODEL_NAMES)))
 
         val_loss, val_accuracy, predictions, true_labels = eval_model(model, val_loader, loss_fn, device, save_prediction=True)
+        pdb.set_trace()
         np.save(os.path.join(SAVE_FOLDER, 'predictions.npy'), predictions)
         np.save(os.path.join(SAVE_FOLDER, 'true_labels.npy'), true_labels)
-        print(f"Saved validation results, continuing with tes predictions")
+        print(f"Saved validation results, continuing with test predictions")
         predict_test(test_loader, model, INFERENCE_SAVE, device)
 
     else:
@@ -347,7 +352,6 @@ def main():
         tokenizers = [AutoTokenizer.from_pretrained(model_name) for model_name in MODEL_NAMES]
         
         optimizer = AdamW(model.parameters(), lr=LEARNING_RATE)
-        loss_fn = nn.CrossEntropyLoss()
 
         train_dataset = preprocess_data_for_transformer(X_train, y_train, tokenizers, MAX_SEQ_LENGTH)
         val_dataset = preprocess_data_for_transformer(X_val, y_val, tokenizers, MAX_SEQ_LENGTH)
