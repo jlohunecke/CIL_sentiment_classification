@@ -47,3 +47,9 @@ python code/transformer_multi.py --help
 
 To reproduce the soft-averaging or majortiy vote results mentioned in the paper (not the best performing model), you have to pre-train the single-branch architectures on the sentiment analysis task and then use [ensembling.py](code/ensembling.py) with the according arguments.
 
+To run the best-performing baselines, simply run: 
+```
+python code/gru.py --embedding="glove"
+python code/random_forest.py --embedding="tfidf"
+```
+Optionally, you can change the embedding type for each baseline between "glove" and "tfidf".
