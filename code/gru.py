@@ -204,7 +204,7 @@ def main(args):
     train_path_neg = getcwd() + "/twitter-datasets/train_neg.txt"
     train_path_pos = getcwd() + "/twitter-datasets/train_pos.txt"
     test_path = getcwd() + "/twitter-datasets/test_data.txt"
-    X_train, y_train, X_val, y_val, X_test, _ = load_data(train_path_neg, train_path_pos, test_path, val_split=0.9, frac=0.2)
+    X_train, y_train, X_val, y_val, X_test, _ = load_data(train_path_neg, train_path_pos, test_path, val_split=0.9, frac=1.0)
 
     data = {"text": X_train.values.tolist(), "label": y_train.values.tolist()}
     data["text"] += X_val.values.tolist()
@@ -261,7 +261,7 @@ def main(args):
     for epoch in range(num_epochs):
         train_acc, train_loss = train_epoch(model, train_loader, loss_fn, optimizer, device)
         test_acc, test_loss = eval_model(model, test_loader, loss_fn, device)
-        print(f'Epoch {epoch + 1}/{num_epochs}, Train Loss: {train_loss:.4f}, Train Accuracy: {train_acc:.4f}, Validation Accuracy: {test_acc:.4f}')
+        print(f'Epoch {epoch + 1}/{num_epochs}, Train Loss: {train_loss:.4f}, Train Accuracy: {train_acc:.4f}, Validation Loss: {test_loss:.4f}, Validation Accuracy: {test_acc:.4f}')
 
 if __name__ == "__main__":
     """
