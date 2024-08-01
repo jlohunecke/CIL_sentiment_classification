@@ -5,7 +5,7 @@
 
 
 
-[Computational Intelligence Lab: Sentiment Analysis](report.pdf)
+[Computational Intelligence Lab: Sentiment Analysis](misc/report.pdf)
 
 Kai Lascheit, Tjark Behrens and Jacob Hunecke 
 
