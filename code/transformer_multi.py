@@ -266,7 +266,6 @@ def load_multi_model_and_tokenizers(model_names, model_folder, directory, num_la
     """
     model_path = os.path.join(directory, model_folder)
     
-    # tokenizers = [AutoTokenizer.from_pretrained(os.path.join(model_path, f'tokenizer_{i}')) for i in range(len(model_names))]
     tokenizers = [AutoTokenizer.from_pretrained(model_name) for model_name in model_names]
 
     pth_files = [f for f in os.listdir(model_path) if f.endswith('.pth')]
@@ -297,9 +296,7 @@ def main():
     parser.add_argument('--save_name', type=str, required=False, help="Model will be saved with '{save_name}.pth' in the folder")
     parser.add_argument('--inference_name', type=str, required=False, help="After training, model will predict results for the test dataset and save them to '{inference_name}.csv' in the save folder")
     parser.add_argument('--batch', type=int, help="Batch size, default is 16")
-    parser.add_argument('--load_model', action='store_true', help="If set, the script will try to load the model from the specified folder and validate and generate test predictions again.")
-
-
+    
     args = parser.parse_args()
 
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -331,81 +328,60 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     loss_fn = nn.CrossEntropyLoss()
+    model = MultiModelTransformer(model_names=MODEL_NAMES, num_labels=NUM_LABELS, hidden_depth=NUM_HIDDEN_DEPTH, hidden_width=NUM_HIDDEN_WIDTH).to(device)    
+    tokenizers = [AutoTokenizer.from_pretrained(model_name) for model_name in MODEL_NAMES]
+    
+    optimizer = AdamW(model.parameters(), lr=LEARNING_RATE)
 
-    if args.load_model:
-        model, tokenizers = load_multi_model_and_tokenizers(model_names=MODEL_NAMES, model_folder=SAVE_FOLDER, directory=getcwd() + "/", num_labels=NUM_LABELS, hidden_depth=NUM_HIDDEN_DEPTH, hidden_width=NUM_HIDDEN_WIDTH, device=device)
-        val_dataset = preprocess_data_for_transformer(X_val, y_val, tokenizers, MAX_SEQ_LENGTH)
-        test_dataset = preprocess_data_for_transformer(X_test, y_test_dummy, tokenizers, MAX_SEQ_LENGTH)
+    train_dataset = preprocess_data_for_transformer(X_train, y_train, tokenizers, MAX_SEQ_LENGTH)
+    val_dataset = preprocess_data_for_transformer(X_val, y_val, tokenizers, MAX_SEQ_LENGTH)
+    test_dataset = preprocess_data_for_transformer(X_test, y_test_dummy, tokenizers, MAX_SEQ_LENGTH)
+
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=custom_collate_fn(len(MODEL_NAMES)))
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=custom_collate_fn(len(MODEL_NAMES)))
+    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=custom_collate_fn(len(MODEL_NAMES)))
+
+    os.makedirs(SAVE_FOLDER, exist_ok=True)
         
-        val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=custom_collate_fn(len(MODEL_NAMES)))
-        test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=custom_collate_fn(len(MODEL_NAMES)))
+    if FREEZE:
+        for transformer in model.transformers:
+            for param in transformer.parameters():
+                param.requires_grad = False
 
-        val_loss, val_accuracy, predictions, true_labels = eval_model(model, val_loader, loss_fn, device, save_prediction=True)
-        pdb.set_trace()
-        np.save(os.path.join(SAVE_FOLDER, 'predictions.npy'), predictions)
-        np.save(os.path.join(SAVE_FOLDER, 'true_labels.npy'), true_labels)
-        print(f"Saved validation results, continuing with test predictions")
-        predict_test(test_loader, model, INFERENCE_SAVE, device)
+    
+    best_val_acc = 0.0
 
-    else:
-        model = MultiModelTransformer(model_names=MODEL_NAMES, num_labels=NUM_LABELS, hidden_depth=NUM_HIDDEN_DEPTH, hidden_width=NUM_HIDDEN_WIDTH).to(device)    
-        tokenizers = [AutoTokenizer.from_pretrained(model_name) for model_name in MODEL_NAMES]
-        
-        optimizer = AdamW(model.parameters(), lr=LEARNING_RATE)
-
-        train_dataset = preprocess_data_for_transformer(X_train, y_train, tokenizers, MAX_SEQ_LENGTH)
-        val_dataset = preprocess_data_for_transformer(X_val, y_val, tokenizers, MAX_SEQ_LENGTH)
-        test_dataset = preprocess_data_for_transformer(X_test, y_test_dummy, tokenizers, MAX_SEQ_LENGTH)
-
-        train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=custom_collate_fn(len(MODEL_NAMES)))
-        val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=custom_collate_fn(len(MODEL_NAMES)))
-        test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, collate_fn=custom_collate_fn(len(MODEL_NAMES)))
-
-        os.makedirs(SAVE_FOLDER, exist_ok=True)
-            
-        if FREEZE:
+    for epoch in range(NUM_EPOCHS):
+        if FREEZE and epoch == NUM_EPOCHS // 2:
             for transformer in model.transformers:
                 for param in transformer.parameters():
-                    param.requires_grad = False
+                    param.requires_grad = True
+            print(f"Unfreezing done at epoch {epoch + 1}:")
 
-        
-        best_val_acc = 0.0
+        train_loss = train_epoch(model, train_loader, loss_fn, optimizer, device)
+        val_loss, val_accuracy = eval_model(model, val_loader, loss_fn, device)
+        print(f"Epoch {epoch+1}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Val Accuracy: {val_accuracy:.4f}")
 
-        for epoch in range(NUM_EPOCHS):
-            if FREEZE and epoch == NUM_EPOCHS // 2:
-                for transformer in model.transformers:
-                    for param in transformer.parameters():
-                        param.requires_grad = True
-                print(f"Unfreezing done at epoch {epoch + 1}:")
+        # Log metrics to TensorBoard
+        writer.add_scalar('Loss/train', train_loss, epoch)
+        writer.add_scalar('Loss/val', val_loss, epoch)
+        writer.add_scalar('Accuracy/val', val_accuracy, epoch)
 
-            train_loss = train_epoch(model, train_loader, loss_fn, optimizer, device)
-            val_loss, val_accuracy = eval_model(model, val_loader, loss_fn, device)
-            print(f"Epoch {epoch+1}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Val Accuracy: {val_accuracy:.4f}")
-
-            # Log metrics to TensorBoard
-            writer.add_scalar('Loss/train', train_loss, epoch)
-            writer.add_scalar('Loss/val', val_loss, epoch)
-            writer.add_scalar('Accuracy/val', val_accuracy, epoch)
-
-            # Save best model and do the test set prediction
-            if val_accuracy > best_val_acc:
-                best_val_acc = val_accuracy
-                torch.save(model.state_dict(), MODEL_SAVE)
-                print(f"Model saved with validation loss: {val_loss:.4f} and accuracy: {val_accuracy:.4f}")
-                print("Saving test predictions for this model.")
-                predict_test(test_loader, model, INFERENCE_SAVE, device)
-        
-        if not os.path.exists(INFERENCE_SAVE):
+        # Save best model and do the test set prediction
+        if val_accuracy > best_val_acc:
+            best_val_acc = val_accuracy
+            torch.save(model.state_dict(), MODEL_SAVE)
+            print(f"Model saved with validation loss: {val_loss:.4f} and accuracy: {val_accuracy:.4f}")
+            print("Saving test predictions for this model.")
             predict_test(test_loader, model, INFERENCE_SAVE, device)
-        
-        for i, tokenizer in enumerate(tokenizers):
-            tokenizer.save_pretrained(os.path.join(SAVE_FOLDER, f'tokenizer_{i}'))
-        print(f"All tokenizers saved in {SAVE_FOLDER}")
+    
+    if not os.path.exists(INFERENCE_SAVE):
+        predict_test(test_loader, model, INFERENCE_SAVE, device)
 
-        writer.close()
+    writer.close()
 
-        print("The multi-model transformer was trained in the following configuration: ")
-        print(MODEL_NAMES, MAX_SEQ_LENGTH, NUM_EPOCHS, NUM_HIDDEN_WIDTH, NUM_HIDDEN_DEPTH, FREEZE)
+    print("The multi-model transformer was trained in the following configuration: ")
+    print(MODEL_NAMES, MAX_SEQ_LENGTH, NUM_EPOCHS, NUM_HIDDEN_WIDTH, NUM_HIDDEN_DEPTH, FREEZE)
 
 if __name__ == "__main__":
     main()

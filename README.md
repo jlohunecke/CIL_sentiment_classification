@@ -32,7 +32,7 @@ pip install -r requirements.txt
 ```
 
 ## Experiments
-This repository already contains a small version of the provided twitter datasets. Keep in mind, that our final version was trained on the full dataset. Either substitute the according files ([train_pos.txt](twitter-datasets/train_pos.txt), [train_neg.txt](twitter-datasets/train_neg.txt)) or change the paths in line 311 and 312 of [transformer_multi.py](code/transformer_multi.py) to the full dataset.
+This repository already contains a small version of the provided twitter datasets. Keep in mind, that our final version was trained on the full dataset. Either substitute the according files ([train_pos.txt](twitter-datasets/train_pos.txt), [train_neg.txt](twitter-datasets/train_neg.txt)) or change the paths in line 322 and 323 of [transformer_multi.py](code/transformer_multi.py) to the full dataset.
 
 To reproduce the results from our best submission in the Kaggle competition, run the command below from the main directory. Be aware that training requires a GPU with at least 24GB of GPU and lasts roughly 50 hours (or more depending on the computational ressources). 
 ```
@@ -40,6 +40,10 @@ python code/transformer_multi.py --models 'bert-large-uncased' 'roberta-large-op
 ```
 
 This will create a folder called 'multi' containing the model weights with the best validation accuracy (multi-model.pth) and a corresponding prediction file that is ready to submit for the Kaggle competition (multi.csv).
-To achieve other results from our experiment section, check out the possible variations of the argparse arguments. For more information: python code/transformer_multi.py --help
+To achieve other results from our experiment section, check out the possible variations of the argparse arguments. For more information: 
+```
+python code/transformer_multi.py --help
+```
 
+To reproduce the soft-averaging or majortiy vote results mentioned in the paper (not the best performing model), you have to pre-train the single-branch architectures on the sentiment analysis task and then use [ensembling.py](code/ensembling.py) with the according arguments.
 
