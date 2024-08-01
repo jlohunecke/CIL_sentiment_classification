@@ -235,7 +235,7 @@ def main():
         writer.add_scalar('Accuracy/val', val_accuracy, epoch)
 
         # Save the model if validation loss has decreased
-        if val_accuracy < best_val_acc:
+        if val_accuracy > best_val_acc:
             best_val_acc = val_accuracy
             torch.save(model.state_dict(), MODEL_SAVE)
             print(f"Model saved with validation loss: {val_loss:.4f} and accuracy: {val_accuracy:.4f}")
